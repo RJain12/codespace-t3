@@ -118,7 +118,6 @@ import {
   CircleAlertIcon,
   DownloadIcon,
   EyeIcon,
-  FileTextIcon,
   GitForkIcon,
   GlobeIcon,
   type LucideIcon,
@@ -3589,7 +3588,7 @@ function toolGroupSummaryIconName(
     case "list-prs":
       return "pull-request";
     case "read":
-      return "file-text";
+      return "eye";
     case "edit":
       return "square-pen";
     case "command":
@@ -4474,7 +4473,6 @@ type WorkEntryIconName =
   | "computer"
   | "device"
   | "eye"
-  | "file-text"
   | "globe"
   | "hammer"
   | "message-circle"
@@ -4682,8 +4680,6 @@ function WorkEntryIcon({ name, className }: { name: WorkEntryIconName; className
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
       return <EyeIcon className={className} aria-hidden />;
-    case "file-text":
-      return <FileTextIcon className={className} aria-hidden />;
     case "globe":
       return <GlobeIcon className={className} aria-hidden />;
     case "hammer":
@@ -4813,7 +4809,6 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   const toolPresentation = resolveWorkEntryToolPresentation(workEntry);
   if (toolPresentation) return toolPresentation.icon;
   const action = toolGroupAction(workEntry);
-  if (action === "read" && workEntryViewedImagePath(workEntry)) return "eye";
   if (action !== "other") return toolGroupSummaryIconName(action);
 
   switch (workEntry.itemType) {
