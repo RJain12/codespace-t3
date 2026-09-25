@@ -411,7 +411,7 @@ export function QueuedRunsControl({
                       />
                     ) : null}
                     {item.thumbnails.length > 0 ? (
-                      <span className="flex shrink-0 items-center gap-0.5">
+                      <span className="flex shrink-0 -translate-y-px items-center gap-0.5">
                         {item.thumbnails.map((thumbnail) => (
                           <span
                             key={thumbnail.key}
