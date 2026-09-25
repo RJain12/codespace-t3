@@ -43,9 +43,8 @@ const browserToolInstructions = (availability: boolean | T3CodeToolAvailability)
   }`;
 };
 
-const codexPlanModeDeveloperInstructions = (
-  browserToolsAvailable: boolean | T3CodeToolAvailability,
-): string => `<collaboration_mode># Plan Mode (Conversational)
+const codexPlanModeDeveloperInstructions =
+  (): string => `<collaboration_mode># Plan Mode (Conversational)
 
 You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is very detailed-intent- and implementation-wise-so that it can be handed to another engineer or agent to be implemented right away. It must be **decision complete**, where the implementer does not need to make any decisions.
 
@@ -173,12 +172,10 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 
 If the user stays in Plan mode and asks for revisions after a prior \`<proposed_plan>\`, any new \`<proposed_plan>\` must be a complete replacement. If the user indicates that the prior plan is not acceptable but does not provide enough information to produce a complete replacement, address the concern and continue planning without producing a \`<proposed_plan>\` block. If the follow-up neither requires changes nor calls the plan into question (e.g. clarifying question), answer it before the block, then reproduce the prior \`<proposed_plan>\` unchanged.
-${browserToolInstructions(browserToolsAvailable)}
 </collaboration_mode>`;
 
-const codexDefaultModeDeveloperInstructions = (
-  browserToolsAvailable: boolean | T3CodeToolAvailability,
-): string => `<collaboration_mode># Collaboration Mode: Default
+const codexDefaultModeDeveloperInstructions =
+  (): string => `<collaboration_mode># Collaboration Mode: Default
 
 You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -189,17 +186,20 @@ Your active mode changes only when new developer instructions with a different \
 Use the \`request_user_input\` tool only when it is listed in the available tools for this turn.
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
-${browserToolInstructions(browserToolsAvailable)}
 </collaboration_mode>`;
 
-export interface CodexRuntimeInfo {
-  readonly model: string;
-  readonly reasoningEffort: string;
+export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {
+  return interactionMode === "plan"
+    ? codexPlanModeDeveloperInstructions()
+    : codexDefaultModeDeveloperInstructions();
 }
 
-export function buildCodexDeveloperInstructions(
-  interactionMode: ProviderInteractionMode,
-  runtime: CodexRuntimeInfo,
+export function buildCodexRuntimeInstructions(
+  runtime: {
+    readonly model?: string | undefined;
+    readonly modelName?: string | undefined;
+    readonly reasoningEffort?: string | undefined;
+  },
   /**
    * Whether the `t3-code` MCP server is attached to this turn. Callers derive
    * it from the session's actual MCP configuration rather than re-reading the
@@ -207,11 +207,5 @@ export function buildCodexDeveloperInstructions(
    */
   browserToolsAvailable: boolean | T3CodeToolAvailability = true,
 ): string {
-  const base =
-    interactionMode === "plan"
-      ? codexPlanModeDeveloperInstructions(browserToolsAvailable)
-      : codexDefaultModeDeveloperInstructions(browserToolsAvailable);
-  return `${base}
-
-${buildRuntimeInstructions({ harness: "Codex", ...runtime })}`;
+  return `${buildRuntimeInstructions({ harness: "Codex", ...runtime })}${browserToolInstructions(browserToolsAvailable)}`;
 }

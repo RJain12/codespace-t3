@@ -13,6 +13,7 @@ import {
   type ProviderSession,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
+  type ServerProviderModel,
   RuntimeMode,
   ThreadId,
   TurnId,
@@ -41,6 +42,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   buildCodexDeveloperInstructions,
+  buildCodexRuntimeInstructions,
   type T3CodeToolAvailability,
 } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
@@ -140,11 +142,13 @@ const McpElicitationForm = Schema.Struct({
 const isMcpElicitationMetadata = Schema.is(McpElicitationMetadata);
 const isMcpElicitationForm = Schema.is(McpElicitationForm);
 
-// TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
-// `V2TurnStartParams` schema includes `collaborationMode` directly.
+// Experimental fields are omitted from the generated stable turn schema.
 const CodexTurnStartParamsWithCollaborationMode = EffectCodexSchema.V2TurnStartParams.pipe(
   Schema.fieldsAssign({
     collaborationMode: Schema.optionalKey(EffectCodexSchema.V2TurnStartParams__CollaborationMode),
+    additionalContext: Schema.optionalKey(
+      Schema.Record(Schema.String, EffectCodexSchema.V2TurnStartParams__AdditionalContextEntry),
+    ),
   }),
 );
 const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffect(
@@ -175,6 +179,7 @@ export interface CodexSessionRuntimeOptions {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
+  readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
@@ -583,7 +588,6 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -595,11 +599,7 @@ function buildCodexCollaborationMode(input: {
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(
-        input.interactionMode,
-        { model, reasoningEffort },
-        input.browserToolsAvailable ?? true,
-      ),
+      developer_instructions: buildCodexDeveloperInstructions(input.interactionMode),
     },
   };
 }
@@ -617,6 +617,7 @@ export function buildTurnStartParams(input: {
     readonly path: string;
   }>;
   readonly model?: string;
+  readonly modelName?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
@@ -642,12 +643,26 @@ export function buildTurnStartParams(input: {
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
-    browserToolsAvailable: input.browserToolsAvailable ?? true,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({
     threadId: input.threadId,
     input: turnInput,
+    // Catalog-provided mode prompts can replace collaboration developer instructions.
+    // Application context reaches the model independently and refreshes on every turn.
+    additionalContext: {
+      "t3-code": {
+        kind: "application",
+        value: buildCodexRuntimeInstructions(
+          {
+            model: collaborationMode?.settings.model ?? normalizeCodexModelSlug(input.model),
+            modelName: input.modelName,
+            reasoningEffort: collaborationMode?.settings.reasoning_effort ?? input.effort,
+          },
+          input.browserToolsAvailable ?? true,
+        ),
+      },
+    },
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
@@ -2509,12 +2524,15 @@ export const makeCodexSessionRuntime = (
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
+          const models = options.models ? yield* options.models : [];
+          const modelName = models.find((model) => model.slug === normalizedModel)?.name;
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
+            ...(modelName ? { modelName } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),

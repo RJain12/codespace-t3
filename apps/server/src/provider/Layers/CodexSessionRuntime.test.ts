@@ -9,7 +9,10 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import {
+  buildCodexDeveloperInstructions,
+  buildCodexRuntimeInstructions,
+} from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
@@ -214,6 +217,15 @@ describe("buildTurnStartParams", () => {
 
     NodeAssert.deepStrictEqual(params, {
       threadId: "provider-thread-1",
+      additionalContext: {
+        "t3-code": {
+          kind: "application",
+          value: buildCodexRuntimeInstructions({
+            model: "gpt-5.3-codex",
+            reasoningEffort: "medium",
+          }),
+        },
+      },
       approvalPolicy: "never",
       approvalsReviewer: "user",
       sandboxPolicy: {
@@ -232,10 +244,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: buildCodexDeveloperInstructions("plan", {
-            model: "gpt-5.3-codex",
-            reasoningEffort: "medium",
-          }),
+          developer_instructions: buildCodexDeveloperInstructions("plan"),
         },
       },
     });
@@ -260,6 +269,15 @@ describe("buildTurnStartParams", () => {
 
     NodeAssert.deepStrictEqual(params, {
       threadId: "provider-thread-1",
+      additionalContext: {
+        "t3-code": {
+          kind: "application",
+          value: buildCodexRuntimeInstructions({
+            model: "gpt-5.3-codex",
+            reasoningEffort: "medium",
+          }),
+        },
+      },
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       sandboxPolicy: {
@@ -281,10 +299,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: buildCodexDeveloperInstructions("default", {
-            model: "gpt-5.3-codex",
-            reasoningEffort: "medium",
-          }),
+          developer_instructions: buildCodexDeveloperInstructions("default"),
         },
       },
     });
@@ -303,7 +318,9 @@ describe("buildTurnStartParams", () => {
     const settings = params.collaborationMode?.settings;
     NodeAssert.equal(settings?.model, DEFAULT_MODEL);
     NodeAssert.equal(settings?.reasoning_effort, "medium");
-    NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with medium`));
+    NodeAssert.ok(
+      params.additionalContext?.["t3-code"]?.value.includes(`as ${DEFAULT_MODEL} with medium`),
+    );
   });
 
   it.effect("routes approvals to the auto reviewer in auto mode", () =>
@@ -316,6 +333,9 @@ describe("buildTurnStartParams", () => {
 
       NodeAssert.deepStrictEqual(params, {
         threadId: "provider-thread-1",
+        additionalContext: {
+          "t3-code": { kind: "application", value: buildCodexRuntimeInstructions({}) },
+        },
         approvalPolicy: "on-request",
         approvalsReviewer: "auto_review",
         sandboxPolicy: {
@@ -342,6 +362,9 @@ describe("buildTurnStartParams", () => {
 
     NodeAssert.deepStrictEqual(params, {
       threadId: "provider-thread-1",
+      additionalContext: {
+        "t3-code": { kind: "application", value: buildCodexRuntimeInstructions({}) },
+      },
       approvalPolicy: "untrusted",
       approvalsReviewer: "user",
       sandboxPolicy: {
@@ -559,100 +582,75 @@ describe("Codex MCP elicitation approvals", () => {
   });
 });
 
-describe("buildCodexDeveloperInstructions", () => {
-  it("appends runtime info after the mode instructions", () => {
-    const instructions = buildCodexDeveloperInstructions("default", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "high",
-    });
-
-    NodeAssert.match(instructions, /^<collaboration_mode># Collaboration Mode: Default/);
-    NodeAssert.match(instructions, /T3 Code/);
-    NodeAssert.match(instructions, /Codex harness/);
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
-  });
-
-  it("describes Markdown media support in the runtime context in both modes", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, {
-        model: "gpt-5.3-codex",
-        reasoningEffort: "high",
-      });
-      NodeAssert.match(
-        instructions,
-        /<runtime_info>.*embed images and videos.*Markdown.*<\/runtime_info>/,
-      );
-    }
-  });
-
-  it("includes runtime info alongside plan mode instructions", () => {
-    const instructions = buildCodexDeveloperInstructions("plan", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-
-    NodeAssert.match(instructions, /^<collaboration_mode># Plan Mode/);
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
-  });
-
-  it("varies with the model and effort of each turn", () => {
-    const first = buildCodexDeveloperInstructions("default", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-    const second = buildCodexDeveloperInstructions("default", {
-      model: "gpt-5.4",
-      reasoningEffort: "high",
-    });
-
-    NodeAssert.notEqual(first, second);
-  });
+describe("Codex runtime instructions", () => {
+  for (const interactionMode of ["default", "plan", undefined] as const) {
+    it.effect(
+      `includes model identity independently of ${interactionMode ?? "unspecified"} mode`,
+      () =>
+        Effect.gen(function* () {
+          const params = yield* buildTurnStartParams({
+            threadId: "provider-thread-1",
+            runtimeMode: "full-access",
+            model: "gpt-5.3-codex",
+            modelName: "GPT-5.3 Codex",
+            effort: "high",
+            ...(interactionMode ? { interactionMode } : {}),
+            browserToolsAvailable: false,
+          });
+          const context = params.additionalContext?.["t3-code"];
+          NodeAssert.equal(context?.kind, "application");
+          NodeAssert.match(
+            context?.value ?? "",
+            /GPT-5\.3 Codex \(model slug: gpt-5\.3-codex\) with high reasoning effort/,
+          );
+          NodeAssert.match(context?.value ?? "", /embed images and videos.*Markdown/);
+          NodeAssert.doesNotMatch(
+            params.collaborationMode?.settings.developer_instructions ?? "",
+            /<runtime_info>/,
+          );
+        }),
+    );
+  }
 
   it("flattens multiline metadata into single-line runtime info", () => {
-    const instructions = buildCodexDeveloperInstructions("default", {
+    const instructions = buildCodexRuntimeInstructions({
       model: "gpt\n5.3\ncodex",
+      modelName: "GPT\nCodex",
       reasoningEffort: " high\neffort ",
     });
-
-    NodeAssert.match(instructions, /as gpt 5\.3 codex with high effort reasoning effort/);
+    NodeAssert.match(
+      instructions,
+      /as GPT Codex \(model slug: gpt 5\.3 codex\) with high effort reasoning effort/,
+    );
     NodeAssert.doesNotMatch(instructions, /<runtime_info>[^<]*\n/);
   });
 });
 
-describe("T3 browser developer instructions", () => {
+describe("T3 browser runtime instructions", () => {
   const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
 
-  it("prefers the product-native preview tools in both collaboration modes", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
-      NodeAssert.match(instructions, /t3-code/);
-      NodeAssert.match(instructions, /preview_status/);
-      NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
-    }
+  it("prefers the product-native preview tools when attached", () => {
+    const instructions = buildCodexRuntimeInstructions(runtime, true);
+    NodeAssert.match(instructions, /t3-code/);
+    NodeAssert.match(instructions, /preview_status/);
+    NodeAssert.match(instructions, /preview_open/);
+    NodeAssert.match(instructions, /Do not switch to global browser skills/);
   });
 
-  it("omits the browser block entirely when the preview tools are not attached", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, false);
-      NodeAssert.doesNotMatch(instructions, /preview_status/);
-      NodeAssert.doesNotMatch(instructions, /preview_open/);
-      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
-      // Steering away from other browser automation must go with the tools;
-      // keeping it would leave the model talked out of its only option.
-      NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
-      // The rest of the collaboration mode is untouched.
-      NodeAssert.match(instructions, /<collaboration_mode>/);
-      NodeAssert.match(instructions, /<\/collaboration_mode>/);
-    }
-  });
-
-  it("tracks the turn's MCP configuration rather than defaulting to on", () => {
-    NodeAssert.match(buildCodexDeveloperInstructions("default", runtime, true), /preview_open/);
+  it("omits browser guidance when only device tools are attached", () => {
+    const instructions = buildCodexRuntimeInstructions(runtime, { browser: false, device: true });
     NodeAssert.doesNotMatch(
-      buildCodexDeveloperInstructions("default", runtime, false),
-      /preview_open/,
+      instructions,
+      /preview_status|preview_open|T3 Code collaborative browser/,
     );
+    NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
+    NodeAssert.match(instructions, /device_list/);
+  });
+
+  it("omits tool guidance when no T3 tools are attached", () => {
+    const instructions = buildCodexRuntimeInstructions(runtime, false);
+    NodeAssert.doesNotMatch(instructions, /preview_open|device_list/);
+    NodeAssert.match(instructions, /<runtime_info>/);
   });
 });
 
