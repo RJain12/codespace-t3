@@ -193,7 +193,7 @@ function acpOperationDisposition(
     case "readOnly":
       return "deny";
     case "workspaceWrite":
-      if (toolKind === "edit" || toolKind === "delete" || toolKind === "move") {
+      if (isAcpMutationKind(toolKind)) {
         return acpWorkspaceWriteAllowsMutation(
           runtimePolicy,
           sandboxPolicy ?? {},
@@ -207,10 +207,24 @@ function acpOperationDisposition(
     case "externalSandbox":
       return "allow";
     case undefined:
-      return runtimePolicy.runtimeMode === "approval-required" ? "deny" : "allow";
+      if (runtimePolicy.runtimeMode === "approval-required") return "deny";
+      // Auto-accept edits approves file changes wherever the agent makes them
+      // (Grok's prompts carry no locations to confine); other actions still ask.
+      if (
+        runtimePolicy.runtimeMode === "auto-accept-edits" &&
+        runtimePolicy.approvalPolicy === undefined &&
+        !isAcpMutationKind(toolKind)
+      ) {
+        return "ask";
+      }
+      return "allow";
     default:
       return "deny";
   }
+}
+
+function isAcpMutationKind(toolKind: string): boolean {
+  return toolKind === "edit" || toolKind === "delete" || toolKind === "move";
 }
 
 export function acpPermissionDisposition(

@@ -91,6 +91,25 @@ describe("acpPermissionDisposition", () => {
     assert.equal(acpPermissionDisposition(policy, permissionRequest("execute")), "deny");
   });
 
+  it("auto-accept-edits approves file changes without locations and asks for the rest", () => {
+    // Grok's session/request_permission carries no locations.
+    const autoAcceptEdits: AcpRuntimePolicy = { runtimeMode: "auto-accept-edits", cwd };
+    for (const kind of ["edit", "delete", "move"] as const) {
+      assert.equal(acpPermissionDisposition(autoAcceptEdits, permissionRequest(kind)), "allow");
+    }
+    for (const kind of ["execute", "fetch", "other"] as const) {
+      assert.equal(acpPermissionDisposition(autoAcceptEdits, permissionRequest(kind)), "ask");
+    }
+    assert.equal(acpPermissionDisposition(autoAcceptEdits, permissionRequest("read")), "allow");
+    assert.equal(
+      acpPermissionDisposition(
+        { ...autoAcceptEdits, approvalPolicy: "on-request" },
+        permissionRequest("edit"),
+      ),
+      "ask",
+    );
+  });
+
   it("auto-allows read-kind permission requests under on-request approval", () => {
     for (const runtimePolicy of [
       { ...policy, approvalPolicy: "on-request" },
@@ -285,12 +304,19 @@ describe("client-mediated dispositions", () => {
   });
 
   it("allows in auto and full-access modes without an explicit sandbox", () => {
-    for (const runtimeMode of ["auto", "auto-accept-edits", "full-access"] as const) {
+    for (const runtimeMode of ["auto", "full-access"] as const) {
       const policy: AcpRuntimePolicy = { runtimeMode, cwd };
       assert.equal(acpClientReadDisposition(policy), "allow");
       assert.equal(acpClientWriteDisposition(policy, NodePath.join(cwd, "file.ts")), "allow");
       assert.equal(acpClientExecuteDisposition(policy), "allow");
     }
+  });
+
+  it("allows writes but asks for terminals in auto-accept-edits mode", () => {
+    const policy: AcpRuntimePolicy = { runtimeMode: "auto-accept-edits", cwd };
+    assert.equal(acpClientReadDisposition(policy), "allow");
+    assert.equal(acpClientWriteDisposition(policy, NodePath.join(cwd, "file.ts")), "allow");
+    assert.equal(acpClientExecuteDisposition(policy), "ask");
   });
 
   it("allows reads but denies writes and terminals under an explicit read-only sandbox", () => {

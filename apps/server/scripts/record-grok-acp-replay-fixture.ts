@@ -27,6 +27,7 @@ import { ServerConfig } from "../src/config.ts";
 import {
   GROK_DEFAULT_INSTANCE_ID,
   GROK_PROVIDER,
+  grokLaunchRuntimeMode,
   makeGrokAdapterV2,
 } from "../src/orchestration-v2/Adapters/GrokAdapterV2.ts";
 import { ACP_PROTOCOL } from "../src/orchestration-v2/Adapters/AcpAdapterV2.ts";
@@ -385,7 +386,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
           serverConfig: yield* ServerConfig,
           selfInvocation: yield* resolveSelfInvocation(),
           // Production's runtime factory, with the protocol logger teeing raw lines.
-          makeRuntime: (input) =>
+          makeRuntime: ({ runtimePolicy, ...input }) =>
             makeGrokAcpRuntime({
               ...input,
               protocolLogging: tee.attachRuntime(),
@@ -393,6 +394,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
               grokSettings: settings,
               environment,
               childProcessSpawner,
+              runtimeMode: grokLaunchRuntimeMode(runtimePolicy),
             }),
         }),
       ];

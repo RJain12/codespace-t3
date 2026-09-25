@@ -32,12 +32,18 @@ interface GrokAcpRuntimeInput extends Omit<
   readonly runtimeMode?: RuntimeMode;
 }
 
+/**
+ * Launch argv for a runtime mode. `--permission-mode` on the argv beats the
+ * user's Grok config, so Supervised cannot inherit a configured always-approve.
+ * `grok agent` only wires always-approve and auto at launch; `acceptEdits`
+ * would behave exactly like `default`, so Auto-accept edits launches asking
+ * and T3's ACP client policy approves the edit prompts.
+ */
 export function grokAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<string> {
   switch (runtimeMode) {
     case "approval-required":
-      return ["--permission-mode", "default", "agent", "stdio"];
     case "auto-accept-edits":
-      return ["--permission-mode", "acceptEdits", "agent", "stdio"];
+      return ["--permission-mode", "default", "agent", "stdio"];
     case "auto":
       return ["--permission-mode", "auto", "agent", "stdio"];
     case "full-access":
