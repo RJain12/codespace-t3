@@ -187,8 +187,15 @@ export type OrchestratorFixtureInputStep =
       readonly status: OrchestrationV2RunStatus;
       /** Then also wait until that run has projected an item of this type. */
       readonly waitForTurnItemType?: OrchestrationV2TurnItem["type"];
-      /** Advance the test clock by this much each time the provider goes quiet. */
-      readonly advanceClockWhenQuiet?: Duration.Input;
+    }
+  | {
+      /**
+       * A run held open for background work finishes through the adapter's
+       * debounce, which replay passes on the adapter's receipt.
+       */
+      readonly type: "finish_held_run";
+      readonly targetRunIndex: number;
+      readonly status: OrchestrationV2RunStatus;
     }
   | {
       readonly type: "capture_shell_snapshot";
@@ -511,10 +518,9 @@ export function materializeFixtureInput(input: {
                     nextStep.targetRunIndex === runIndex) ||
                   // A provider continuation run starts while this thread is
                   // busy, so waiting for idle first would never return.
-                  (nextStep.type === "await_run_status" &&
-                    (nextStep.targetRunIndex > runIndex ||
-                      // Held open until the test clock moves, so it cannot go idle first.
-                      nextStep.advanceClockWhenQuiet !== undefined)))) ||
+                  (nextStep.type === "await_run_status" && nextStep.targetRunIndex > runIndex) ||
+                  // Held open until the test clock moves, so it cannot go idle first.
+                  nextStep.type === "finish_held_run")) ||
               nextStep?.type === "approve_next_runtime_request" ||
               nextStep?.type === "answer_next_user_input_request";
             const key = `run:${runIndex}`;
@@ -600,9 +606,6 @@ export function materializeFixtureInput(input: {
             threadId: ids.threadId,
             runId: runIdFor(step.targetRunIndex),
             status: step.status,
-            ...(step.advanceClockWhenQuiet === undefined
-              ? {}
-              : { advanceClockWhenQuiet: step.advanceClockWhenQuiet }),
           });
           if (step.waitForTurnItemType !== undefined) {
             steps.push({
@@ -612,6 +615,14 @@ export function materializeFixtureInput(input: {
               itemType: step.waitForTurnItemType,
             });
           }
+          break;
+        case "finish_held_run":
+          steps.push({
+            type: "finish_held_run",
+            threadId: ids.threadId,
+            runId: runIdFor(step.targetRunIndex),
+            status: step.status,
+          });
           break;
         case "capture_shell_snapshot":
           steps.push({ type: "capture_shell_snapshot", key: step.key });

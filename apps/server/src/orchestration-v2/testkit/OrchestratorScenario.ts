@@ -12,9 +12,11 @@ import type {
   CommandId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -55,12 +57,17 @@ export type OrchestratorV2ScenarioStep =
       readonly threadId: ThreadId;
       readonly runId: OrchestrationV2Run["id"];
       readonly status: OrchestrationV2Run["status"];
+    }
+  | {
       /**
-       * Advance the test clock by this much whenever no event has been stored
-       * for a short wall-clock quiet window, e.g. to pass an adapter's finish
-       * debounce once the provider has stopped streaming.
+       * Wait for a run held open for background work to finish: each time the
+       * adapter arms its finish debounce (a replay gate receipt), advance the
+       * test clock by exactly that debounce, until the run reaches `status`.
        */
-      readonly advanceClockWhenQuiet?: Duration.Input;
+      readonly type: "finish_held_run";
+      readonly threadId: ThreadId;
+      readonly runId: OrchestrationV2Run["id"];
+      readonly status: OrchestrationV2Run["status"];
     }
   | {
       readonly type: "await_run_turn_item";
@@ -207,9 +214,6 @@ const SCENARIO_WAIT_ATTEMPTS = 10_000;
 // the iteration budget and this wall-clock deadline are spent.
 const SCENARIO_WAIT_DEADLINE_MS = 60_000;
 const scenarioWaitDeadline = () => performance.now() + SCENARIO_WAIT_DEADLINE_MS;
-// Replay frames are local, so a provider that has written nothing for this
-// long has stopped streaming until the test clock moves.
-const SCENARIO_QUIET_WINDOW_MS = 250;
 const scenarioWaitExhausted = (attemptsRemaining: number, deadlineAt: number) =>
   attemptsRemaining <= 0 && performance.now() >= deadlineAt;
 
@@ -366,28 +370,10 @@ export function runOrchestratorV2Scenario(
           return yield* waitForRunSteerable(threadId, runId, attemptsRemaining - 1, deadlineAt);
         });
 
-      // Wall-clock progress of a quiet-advancing wait: the stored event count
-      // when it last changed, and when.
-      const quietSince = { events: -1, at: 0 };
-      const advanceClockIfQuiet = (duration: Duration.Input) =>
-        Effect.gen(function* () {
-          const events = (yield* Ref.get(observedStoredEvents)).length;
-          const now = performance.now();
-          if (events !== quietSince.events) {
-            quietSince.events = events;
-            quietSince.at = now;
-            return;
-          }
-          if (now - quietSince.at < SCENARIO_QUIET_WINDOW_MS) return;
-          quietSince.at = now;
-          yield* TestClock.adjust(duration);
-        });
-
       const waitForRunStatus = (
         threadId: ThreadId,
         runId: OrchestrationV2Run["id"],
         status: OrchestrationV2Run["status"],
-        advanceClockWhenQuiet: Duration.Input | undefined,
         attemptsRemaining = SCENARIO_WAIT_ATTEMPTS,
         deadlineAt = scenarioWaitDeadline(),
       ): Effect.Effect<void, OrchestratorV2Error | OrchestratorV2ScenarioStepError, never> =>
@@ -396,9 +382,6 @@ export function runOrchestratorV2Scenario(
           const run = projection.runs.find((candidate) => candidate.id === runId);
           if (run?.status === status) {
             return;
-          }
-          if (advanceClockWhenQuiet !== undefined) {
-            yield* advanceClockIfQuiet(advanceClockWhenQuiet);
           }
           if (scenarioWaitExhausted(attemptsRemaining, deadlineAt)) {
             return yield* new OrchestratorV2ScenarioStepError({
@@ -411,7 +394,6 @@ export function runOrchestratorV2Scenario(
             threadId,
             runId,
             status,
-            advanceClockWhenQuiet,
             attemptsRemaining - 1,
             deadlineAt,
           );
@@ -522,6 +504,52 @@ export function runOrchestratorV2Scenario(
           );
         });
 
+      // Finish receipts earlier held runs already consumed.
+      let consumedFinishReceipts = 0;
+      const finishHeldRun = Effect.fn("scenario.finishHeldRun")(function* (
+        step: Extract<OrchestratorV2ScenarioStep, { readonly type: "finish_held_run" }>,
+      ) {
+        const gate = options.replayGate;
+        if (gate === undefined) {
+          return yield* new OrchestratorV2ScenarioStepError({
+            scenario: scenario.name,
+            step: `finish_held_run:${step.runId}:no_replay_gate`,
+          });
+        }
+        while (true) {
+          // The run settles only through the latest armed debounce; a rearm
+          // (a late frame) supersedes it with a new receipt. Advance past the
+          // latest one, then either the run gets there or it rearmed again.
+          const armed = yield* Effect.promise(() =>
+            gate.waitForFinishArmed(consumedFinishReceipts),
+          ).pipe(
+            Effect.timeoutOption(Duration.millis(SCENARIO_WAIT_DEADLINE_MS)),
+            Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+          );
+          if (Option.isNone(armed)) {
+            const projection = yield* orchestrator.getThreadProjection(step.threadId);
+            const run = projection.runs.find((candidate) => candidate.id === step.runId);
+            return yield* new OrchestratorV2ScenarioStepError({
+              scenario: scenario.name,
+              step: `finish_held_run:${step.runId}:${step.status}:actual=${run?.status ?? "missing"}:no_finish_armed`,
+            });
+          }
+          consumedFinishReceipts = gate.finishArmedCount();
+          yield* TestClock.adjust(armed.value);
+          const settled = yield* Effect.raceFirst(
+            waitForRunStatus(step.threadId, step.runId, step.status).pipe(Effect.as(true)),
+            Effect.promise(() => gate.waitForFinishArmed(consumedFinishReceipts)).pipe(
+              Effect.as(false),
+            ),
+          );
+          // A finalized turn arms no further receipts, so the count is final.
+          if (settled) {
+            consumedFinishReceipts = gate.finishArmedCount();
+            return;
+          }
+        }
+      });
+
       const releaseReplayGate = Effect.fn("scenario.releaseReplayGate")(function* (label: string) {
         const gate = options.replayGate;
         const reached =
@@ -573,12 +601,10 @@ export function runOrchestratorV2Scenario(
             yield* waitForRunSteerable(step.threadId, step.runId);
             break;
           case "await_run_status":
-            yield* waitForRunStatus(
-              step.threadId,
-              step.runId,
-              step.status,
-              step.advanceClockWhenQuiet,
-            );
+            yield* waitForRunStatus(step.threadId, step.runId, step.status);
+            break;
+          case "finish_held_run":
+            yield* finishHeldRun(step);
             break;
           case "await_run_turn_item":
             yield* waitForRunTurnItem(step.threadId, step.runId, step.itemType);
@@ -639,5 +665,9 @@ export function runOrchestratorV2Scenario(
         capturedShellSnapshots,
       };
     }),
+  ).pipe(
+    // A failed step can leave provider frames held at a gate. Release them
+    // before the harness shuts the provider down, or teardown waits on them.
+    Effect.ensuring(Effect.sync(() => options.replayGate?.releaseAll())),
   );
 }

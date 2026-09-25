@@ -10,26 +10,16 @@ const GROK_MONITOR_WAKE_LABEL =
   "notification:session/update:agent_message_chunk:notifications-01a0d754-c2a6-7e51-b5d9-710c43051847";
 
 // The root prompt settles while the monitor still runs, so run 1 is held open
-// until `_x.ai/task_completed`; the adapter's finish debounce then settles it on
-// the test clock. Grok's own reply to the finished monitor is held until run 1
-// settled and replays as a continuation run, like Claude and Codex wakes.
+// until `_x.ai/task_completed`, then finishes through the adapter's debounce.
+// Grok's own reply to the finished monitor is held until run 1 settled and
+// replays as a continuation run, like Claude and Codex background wakes.
 export function grokMonitorInput(): OrchestratorFixtureInput {
   return {
     steps: [
       { type: "message", text: GROK_MONITOR_PROMPT },
-      {
-        type: "await_run_status",
-        targetRunIndex: 1,
-        status: "completed",
-        advanceClockWhenQuiet: "3 seconds",
-      },
+      { type: "finish_held_run", targetRunIndex: 1, status: "completed" },
       { type: "release_replay_gate", label: GROK_MONITOR_WAKE_LABEL },
-      {
-        type: "await_run_status",
-        targetRunIndex: 2,
-        status: "completed",
-        advanceClockWhenQuiet: "3 seconds",
-      },
+      { type: "finish_held_run", targetRunIndex: 2, status: "completed" },
     ],
   };
 }

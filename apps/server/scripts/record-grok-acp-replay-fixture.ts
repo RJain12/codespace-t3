@@ -420,15 +420,18 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
   const scenario = {
     name: `${fixtureName}/grok-record`,
     commands: materialized.commands,
-    // Background fixtures pace replay with gates and waits on runs the finish
-    // debounce settles. Live, Grok and wall time pace themselves, so a fixture
-    // that gates records its dispatches only and then waits for Grok to idle.
+    // Background fixtures pace replay with gates and with receipts that drive
+    // the finish debounce on the test clock. Live, Grok and wall time pace
+    // themselves, so a fixture that gates records its dispatches only and then
+    // waits for Grok to idle, and a held run is simply waited for.
     steps: materialized.steps.some(
       (step) =>
         step.type === "release_replay_gate" || step.type === "release_replay_gate_after_waiting",
     )
       ? materialized.steps.filter((step) => step.type === "dispatch")
-      : materialized.steps,
+      : materialized.steps.map((step) =>
+          step.type === "finish_held_run" ? { ...step, type: "await_run_status" as const } : step,
+        ),
     projectionThreadIds: materialized.projectionThreadIds,
     runtimePolicyOverride: { ...variant.runtimePolicyOverride, cwd: realWorkspace },
   };

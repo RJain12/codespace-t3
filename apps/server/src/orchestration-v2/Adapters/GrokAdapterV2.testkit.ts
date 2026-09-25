@@ -85,6 +85,14 @@ function makeGrokProviderAdapterRegistryReplayLayer(
           })(runtimeInput).pipe(Effect.flatMap(makeXAiPromptCompletionRuntime)),
         continuationRequests,
         assertComplete: makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript),
+        ...(replayGate === undefined
+          ? {}
+          : {
+              testHooks: {
+                onDeferredFinalizeScheduled: (debounce) =>
+                  Effect.sync(() => replayGate.recordFinishArmed(debounce)),
+              },
+            }),
       });
       return [adapter];
     }),

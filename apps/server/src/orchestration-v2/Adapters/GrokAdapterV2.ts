@@ -112,6 +112,7 @@ export interface GrokAdapterV2Options {
   readonly serverConfig: ServerConfig["Service"];
   readonly nativeLogging?: Parameters<typeof makeAcpAdapterV2>[0]["nativeLogging"];
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
+  readonly testHooks?: Parameters<typeof makeAcpAdapterV2>[0]["testHooks"];
   readonly makeRuntime?: (
     input: AcpAdapterV2RuntimeInput,
   ) => Effect.Effect<
@@ -307,6 +308,7 @@ export function makeGrokAdapterV2(options: GrokAdapterV2Options) {
     ...(options.continuationRequests === undefined
       ? {}
       : { continuationRequests: options.continuationRequests }),
+    ...(options.testHooks === undefined ? {} : { testHooks: options.testHooks }),
   });
 }
 
