@@ -841,7 +841,7 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
     }),
   );
 
-  it.effect("lists, messages, and reads threads through a running server", () =>
+  it.effect("lists, starts, messages, and reads threads through a running server", () =>
     Effect.gen(function* () {
       const baseDir = NodeFS.mkdtempSync(
         NodePath.join(NodeOS.tmpdir(), "t3-cli-threads-live-test-"),
@@ -899,6 +899,24 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
             runCli(["thread", "show", "thread-cli-live", "--base-dir", baseDir]),
           );
           assert.equal(shown.output, "Live thread (idle)\n\n[user]\nHello from the CLI");
+
+          // Without --model, a new thread takes the model of the latest thread.
+          const started = yield* captureStdout(
+            runCli(["thread", "start", workspaceRoot, "Build the thing", "--base-dir", baseDir]),
+          );
+          const startedThread = (yield* projectionSnapshotQuery.getSnapshot()).threads.find(
+            (thread) => thread.id === started.output,
+          );
+          assert.equal(startedThread?.title, "Build the thing");
+          assert.equal(startedThread?.projectId, project.id);
+          assert.deepEqual(startedThread?.modelSelection, {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          });
+          assert.deepEqual(
+            startedThread?.messages.map((message) => [message.role, message.text]),
+            [["user", "Build the thing"]],
+          );
         }),
       );
     }),

@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 
-import { turnOutcome } from "./thread.ts";
+import { findModelOffers, turnOutcome } from "./thread.ts";
 
 const SENT_AT = "2026-09-24T12:00:00.000Z";
 const EARLIER = "2026-09-24T11:00:00.000Z";
@@ -112,5 +112,47 @@ describe("turnOutcome", () => {
       turnOutcome(makeThread({ latestTurn: running, hasPendingUserInput: true }), SENT_AT),
       "needs-input",
     );
+  });
+});
+
+describe("findModelOffers", () => {
+  const codex = ProviderInstanceId.make("codex");
+  const codexWork = ProviderInstanceId.make("codex_work");
+  const claude = ProviderInstanceId.make("claudeAgent");
+  const providers = [
+    {
+      instanceId: codex,
+      models: [{ slug: "gpt-5" }, { slug: "gpt-5-codex", isDefault: true }],
+    },
+    { instanceId: codexWork, models: [{ slug: "gpt-5-codex" }] },
+    {
+      instanceId: claude,
+      models: [{ slug: "claude-sonnet-5", aliases: ["sonnet"] }, { slug: "claude-opus-5-5" }],
+    },
+  ];
+
+  it("matches a model by slug or alias", () => {
+    assert.deepEqual(findModelOffers(providers, "sonnet", undefined), [
+      { instanceId: claude, model: "claude-sonnet-5" },
+    ]);
+  });
+
+  it("returns every provider that offers the model", () => {
+    assert.deepEqual(findModelOffers(providers, "gpt-5-codex", undefined), [
+      { instanceId: codex, model: "gpt-5-codex" },
+      { instanceId: codexWork, model: "gpt-5-codex" },
+    ]);
+    assert.deepEqual(findModelOffers(providers, "gpt-5-codex", "codex_work"), [
+      { instanceId: codexWork, model: "gpt-5-codex" },
+    ]);
+  });
+
+  it("uses the provider's default model when only the provider is set", () => {
+    assert.deepEqual(findModelOffers(providers, undefined, "codex"), [
+      { instanceId: codex, model: "gpt-5-codex" },
+    ]);
+    assert.deepEqual(findModelOffers(providers, undefined, "claudeAgent"), [
+      { instanceId: claude, model: "claude-sonnet-5" },
+    ]);
   });
 });

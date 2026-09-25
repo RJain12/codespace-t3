@@ -1,5 +1,6 @@
 /**
- * `t3 thread` - list, read, and message threads on the local running server.
+ * `t3 thread` - list, start, read, and message threads on the local running
+ * server.
  *
  * Uses the same HTTP API as `t3 project`, with a session that only has the
  * orchestration scopes and is revoked on exit. There is no offline mode: a
@@ -9,21 +10,33 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentHttpApi,
   MessageId,
   type ClientOrchestrationCommand,
+  type ModelSelection,
   type OrchestrationLatestTurnState,
   OrchestrationMessageRole,
+  type OrchestrationProjectShell,
   OrchestrationSessionStatus,
   type OrchestrationThreadShell,
+  type ServerProvider,
+  type ServerProviderModel,
+  ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { isModelSelectionProviderEnabled } from "@t3tools/shared/serverSettings";
+import { truncate } from "@t3tools/shared/String";
 import * as Console from "effect/Console";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -37,6 +50,7 @@ import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
+import { readProviderStatusCache } from "../provider/providerStatusCache.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { projectCommandErrorFromLiveServerRequest } from "./project.ts";
@@ -68,6 +82,35 @@ export class ThreadProjectNotFoundError extends Schema.TaggedError<ThreadProject
 ) {
   override get message(): string {
     return `Project '${this.project}' not found.`;
+  }
+}
+
+export class ThreadModelRequiredError extends Schema.TaggedError<ThreadModelRequiredError>()(
+  "ThreadModelRequiredError",
+  {},
+) {
+  override get message(): string {
+    return "No default model to use. Pass --model.";
+  }
+}
+
+export class ThreadModelNotFoundError extends Schema.TaggedError<ThreadModelNotFoundError>()(
+  "ThreadModelNotFoundError",
+  { model: Schema.NullOr(Schema.String), provider: Schema.NullOr(Schema.String) },
+) {
+  override get message(): string {
+    const model = this.model === null ? "A model" : `Model '${this.model}'`;
+    const provider = this.provider === null ? "an enabled provider" : `'${this.provider}'`;
+    return `${model} was not found on ${provider}.`;
+  }
+}
+
+export class ThreadModelAmbiguousError extends Schema.TaggedError<ThreadModelAmbiguousError>()(
+  "ThreadModelAmbiguousError",
+  { model: Schema.String, providers: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    return `Model '${this.model}' is on ${this.providers.join(", ")}. Pass --provider.`;
   }
 }
 
@@ -143,6 +186,38 @@ const threadStatus = (thread: OrchestrationThreadShell): typeof ThreadStatus.Typ
 const isThreadBusy = (thread: OrchestrationThreadShell) =>
   thread.session?.status === "running" || thread.session?.status === "starting";
 
+const lastActivityAt = (thread: OrchestrationThreadShell) =>
+  thread.latestUserMessageAt ?? thread.createdAt;
+
+const byLastActivity = (a: OrchestrationThreadShell, b: OrchestrationThreadShell) =>
+  lastActivityAt(b).localeCompare(lastActivityAt(a));
+
+/**
+ * Finds the model selections that match `--model` and `--provider`. A model
+ * matches by slug or alias. With only a provider, it gives that provider's
+ * default model.
+ */
+export const findModelOffers = (
+  providers: ReadonlyArray<
+    Pick<ServerProvider, "instanceId"> & {
+      readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "aliases" | "isDefault">>;
+    }
+  >,
+  model: string | undefined,
+  provider: string | undefined,
+): ReadonlyArray<ModelSelection> =>
+  providers
+    .filter((candidate) => provider === undefined || candidate.instanceId === provider)
+    .flatMap((candidate) => {
+      const entry =
+        model === undefined
+          ? (candidate.models.find((entry) => entry.isDefault === true) ?? candidate.models[0])
+          : candidate.models.find(
+              (entry) => entry.slug === model || entry.aliases?.includes(model) === true,
+            );
+      return entry === undefined ? [] : [{ instanceId: candidate.instanceId, model: entry.slug }];
+    });
+
 /**
  * How the turn requested at `requestedAt` ended, or undefined while it runs.
  * `requestedAt` is the sent message's `createdAt`. The server gives the turn
@@ -182,6 +257,77 @@ const readMessage = Effect.fn("readThreadMessage")(function* (message: string) {
     return yield* new ThreadPromptEmptyError();
   }
   return trimmed;
+});
+
+/** Finds a project by id or workspace path. */
+const findProject = Effect.fn("findThreadProject")(function* (
+  projects: ReadonlyArray<OrchestrationProjectShell>,
+  identifier: string,
+) {
+  const path = yield* Path.Path;
+  const wanted = identifier.trim();
+  const wantedPath = normalizeProjectPathForComparison(path.resolve(wanted));
+  const project = projects.find(
+    (candidate) =>
+      candidate.id === wanted ||
+      normalizeProjectPathForComparison(candidate.workspaceRoot) === wantedPath,
+  );
+  return project ?? (yield* new ThreadProjectNotFoundError({ project: wanted }));
+});
+
+const decodeServerSettings = Schema.decodeUnknownEffect(fromLenientJson(ServerSettings));
+
+/** Reads settings.json, or the defaults when it is missing or invalid. */
+const readServerSettings = (settingsPath: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(settingsPath)),
+    Effect.flatMap(decodeServerSettings),
+    Effect.orElseSucceed(() => DEFAULT_SERVER_SETTINGS),
+  );
+
+/** Reads the enabled, installed providers from the server's on-disk status cache. */
+const readCachedProviders = Effect.fn("readCachedProviders")(function* (cacheDir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const entries = yield* fs.readDirectory(cacheDir).pipe(Effect.orElseSucceed(() => []));
+  const providers = yield* Effect.forEach(
+    entries.filter((entry) => entry.endsWith(".json")),
+    (entry) => readProviderStatusCache(path.join(cacheDir, entry)),
+  );
+  return providers.flatMap((provider) =>
+    provider !== undefined && provider.enabled && provider.installed ? [provider] : [],
+  );
+});
+
+/** Resolves `--model` and `--provider`, or returns `fallback` when neither is set. */
+const resolveModelSelection = Effect.fn("resolveThreadModelSelection")(function* (input: {
+  readonly model: string | undefined;
+  readonly provider: string | undefined;
+  readonly fallback: ModelSelection | null | undefined;
+  readonly cacheDir: string;
+}) {
+  if (input.model === undefined && input.provider === undefined) {
+    return input.fallback ?? (yield* new ThreadModelRequiredError());
+  }
+  const offers = findModelOffers(
+    yield* readCachedProviders(input.cacheDir),
+    input.model,
+    input.provider,
+  );
+  const [offer, ...others] = offers;
+  if (offer === undefined) {
+    return yield* new ThreadModelNotFoundError({
+      model: input.model ?? null,
+      provider: input.provider ?? null,
+    });
+  }
+  if (others.length > 0) {
+    return yield* new ThreadModelAmbiguousError({
+      model: offer.model,
+      providers: offers.map((candidate) => candidate.instanceId),
+    });
+  }
+  return offer;
 });
 
 /** Connects to the running server. The session is revoked when the scope closes. */
@@ -240,8 +386,14 @@ const connectLiveServer = Effect.fn("connectThreadCliServer")(function* (
           () => new ThreadNotFoundError({ threadId }),
         ),
       ),
-    dispatch: (command: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }>) =>
-      call(client.orchestration.dispatch({ headers, payload: command })),
+    dispatch: (command: ClientOrchestrationCommand) =>
+      call(
+        // The client types each command variant as its own request, so a
+        // union payload needs the cast. `t3 project` does the same.
+        client.orchestration.dispatch({ headers, payload: command } as Parameters<
+          typeof client.orchestration.dispatch
+        >[0]),
+      ),
   };
 });
 
@@ -261,17 +413,54 @@ const pollThread = <A>(
     }
   });
 
+/**
+ * Waits for the turn that `messageId` started to end and returns the agent's
+ * final reply. Fails when the turn fails, is interrupted, or needs the user.
+ */
+const waitForReply = (server: LiveServer, threadId: ThreadId, messageId: MessageId) =>
+  Effect.gen(function* () {
+    // The server replaces the command's createdAt with its own clock, so
+    // read the stamp back from the message. Dispatch returns after the
+    // projection commits, so the message is already there.
+    const sent = (yield* server.threadDetail(threadId, 1)).thread.messages.find(
+      (message) => message.id === messageId,
+    );
+    if (sent === undefined) {
+      return yield* Effect.die(new Error(`Sent message ${messageId} is missing from the thread.`));
+    }
+    const ended = yield* pollThread(server, threadId, (candidate) => {
+      const outcome = turnOutcome(candidate, sent.createdAt);
+      return outcome === undefined ? undefined : { outcome, thread: candidate };
+    });
+    if (ended.outcome !== "completed") {
+      return yield* new ThreadTurnEndedError({
+        outcome: ended.outcome,
+        detail: ended.thread.session?.lastError ?? null,
+      });
+    }
+    const turnId = ended.thread.latestTurn?.turnId;
+    const { thread: detail } = yield* server.threadDetail(threadId, 1);
+    return (
+      detail.messages.findLast(
+        (message) => message.role === "assistant" && message.turnId === turnId,
+      )?.text ?? ""
+    );
+  });
+
 /** Runs `run` against the live server and prints what it returns. */
 const runWithLiveServer = <E, R>(
   flags: { readonly baseDir: Option.Option<string>; readonly json?: boolean },
-  run: (server: LiveServer) => Effect.Effect<string, E, R>,
+  run: (
+    server: LiveServer,
+    config: ServerConfig.ServerConfig["Service"],
+  ) => Effect.Effect<string, E, R>,
 ) =>
   Effect.gen(function* () {
     const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
     // Keep server logs out of output that scripts parse.
     const logLevel = flags.json === true ? "Error" : config.logLevel;
     return yield* Effect.gen(function* () {
-      yield* Console.log(yield* run(yield* connectLiveServer(config)));
+      yield* Console.log(yield* run(yield* connectLiveServer(config), config));
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -287,6 +476,15 @@ const runWithLiveServer = <E, R>(
 const threadIdArgument = Argument.String("thread").pipe(
   Argument.withSchema(ThreadId),
   Argument.withDescription("Thread id, from `t3 thread list`."),
+);
+
+const messageArgument = Argument.String("message").pipe(
+  Argument.withDescription("Message to send, or `-` to read it from stdin."),
+);
+
+const waitFlag = Flag.Boolean("wait").pipe(
+  Flag.withDescription("Wait for the turn to end and print the agent's reply."),
+  Flag.withDefault(false),
 );
 
 const jsonFlag = Flag.Boolean("json").pipe(
@@ -307,32 +505,19 @@ const threadListCommand = Command.make("list", {
     runWithLiveServer(flags, (server) =>
       Effect.gen(function* () {
         const snapshot = yield* server.shell;
-        let projects = snapshot.projects;
-        if (Option.isSome(flags.project)) {
-          const path = yield* Path.Path;
-          const wanted = flags.project.value.trim();
-          const wantedPath = normalizeProjectPathForComparison(path.resolve(wanted));
-          projects = projects.filter(
-            (project) =>
-              project.id === wanted ||
-              normalizeProjectPathForComparison(project.workspaceRoot) === wantedPath,
-          );
-          if (projects.length === 0) {
-            return yield* new ThreadProjectNotFoundError({ project: wanted });
-          }
-        }
+        const projects = Option.isSome(flags.project)
+          ? [yield* findProject(snapshot.projects, flags.project.value)]
+          : snapshot.projects;
         const projectTitles = new Map(projects.map((project) => [project.id, project.title]));
-        const lastActivity = (thread: OrchestrationThreadShell) =>
-          thread.latestUserMessageAt ?? thread.createdAt;
         const threads = snapshot.threads
           .filter((thread) => thread.archivedAt === null && projectTitles.has(thread.projectId))
-          .toSorted((a, b) => lastActivity(b).localeCompare(lastActivity(a)))
+          .toSorted(byLastActivity)
           .map((thread) => ({
             id: thread.id,
             title: thread.title,
             project: projectTitles.get(thread.projectId)!,
             status: threadStatus(thread),
-            lastActivityAt: lastActivity(thread),
+            lastActivityAt: lastActivityAt(thread),
           }));
         if (flags.json) {
           return yield* encodeThreadList(threads);
@@ -382,13 +567,8 @@ const threadShowCommand = Command.make("show", {
 const threadSendCommand = Command.make("send", {
   ...projectLocationFlags,
   thread: threadIdArgument,
-  message: Argument.String("message").pipe(
-    Argument.withDescription("Message to send, or `-` to read it from stdin."),
-  ),
-  wait: Flag.Boolean("wait").pipe(
-    Flag.withDescription("Wait for the turn to end and print the agent's reply."),
-    Flag.withDefault(false),
-  ),
+  message: messageArgument,
+  wait: waitFlag,
 }).pipe(
   Command.withDescription(
     "Send a message to a thread. If the agent is working, waits for its turn to end first.",
@@ -423,41 +603,118 @@ const threadSendCommand = Command.make("send", {
         if (!flags.wait) {
           return `Sent to ${thread.title}.`;
         }
+        return yield* waitForReply(server, thread.id, messageId);
+      }),
+    ),
+  ),
+);
 
-        // The server replaces the command's createdAt with its own clock, so
-        // read the stamp back from the message. Dispatch returns after the
-        // projection commits, so the message is already there.
-        const sent = (yield* server.threadDetail(thread.id, 1)).thread.messages.find(
-          (message) => message.id === messageId,
+const threadStartCommand = Command.make("start", {
+  ...projectLocationFlags,
+  project: Argument.String("project").pipe(Argument.withDescription("Project id or path.")),
+  message: messageArgument,
+  model: Flag.String("model").pipe(
+    Flag.withDescription(
+      "Model slug, like `claude-sonnet-5`. Default: the project default, else the model of the latest thread.",
+    ),
+    Flag.optional,
+  ),
+  provider: Flag.String("provider").pipe(
+    Flag.withDescription(
+      "Provider instance, like `codex` or `claudeAgent`. Without --model, uses its default model.",
+    ),
+    Flag.optional,
+  ),
+  wait: waitFlag,
+}).pipe(
+  Command.withDescription(
+    "Start a thread with a first message and print its id. The thread runs in the project folder, not a new worktree.",
+  ),
+  Command.withHandler((flags) =>
+    runWithLiveServer(flags, (server, config) =>
+      Effect.gen(function* () {
+        const text = yield* readMessage(flags.message);
+        const snapshot = yield* server.shell;
+        const project = yield* findProject(snapshot.projects, flags.project);
+        const settings = yield* readServerSettings(config.settingsPath);
+        const projectSettings = resolveProjectSettings(settings, project.id, project).settings;
+        // Like the composer: the project default, else the latest thread's model.
+        const recentThreads = snapshot.threads.toSorted(byLastActivity);
+        const fallback = [
+          projectSettings.defaultModelSelection,
+          recentThreads.find((thread) => thread.projectId === project.id)?.modelSelection,
+          recentThreads[0]?.modelSelection,
+        ].find(
+          (selection) => selection != null && isModelSelectionProviderEnabled(settings, selection),
         );
-        if (sent === undefined) {
-          return yield* Effect.die(
-            new Error(`Sent message ${messageId} is missing from the thread.`),
-          );
-        }
-        const ended = yield* pollThread(server, thread.id, (candidate) => {
-          const outcome = turnOutcome(candidate, sent.createdAt);
-          return outcome === undefined ? undefined : { outcome, thread: candidate };
+        const modelSelection = yield* resolveModelSelection({
+          model: Option.getOrUndefined(flags.model),
+          provider: Option.getOrUndefined(flags.provider),
+          fallback,
+          cacheDir: config.providerStatusCacheDir,
         });
-        if (ended.outcome !== "completed") {
-          return yield* new ThreadTurnEndedError({
-            outcome: ended.outcome,
-            detail: ended.thread.session?.lastError ?? null,
-          });
+
+        const threadId = ThreadId.make(yield* threadCliUuid);
+        const messageId = MessageId.make(yield* threadCliUuid);
+        const title = truncate(text);
+        const runtimeMode = projectSettings.defaultRuntimeMode;
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
+        yield* server.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(yield* threadCliUuid),
+          threadId,
+          projectId: project.id,
+          title,
+          modelSelection,
+          runtimeMode,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+        yield* server
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(yield* threadCliUuid),
+            threadId,
+            message: { messageId, role: "user", text, attachments: [] },
+            modelSelection,
+            titleSeed: title,
+            runtimeMode,
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt,
+          })
+          .pipe(
+            // Do not leave an empty thread behind.
+            Effect.tapError(() =>
+              threadCliUuid.pipe(
+                Effect.flatMap((commandId) =>
+                  server.dispatch({
+                    type: "thread.delete",
+                    commandId: CommandId.make(commandId),
+                    threadId,
+                  }),
+                ),
+                Effect.ignore({ log: true }),
+              ),
+            ),
+          );
+        if (!flags.wait) {
+          return threadId;
         }
-        const turnId = ended.thread.latestTurn?.turnId;
-        const { thread: detail } = yield* server.threadDetail(thread.id, 1);
-        return (
-          detail.messages.findLast(
-            (message) => message.role === "assistant" && message.turnId === turnId,
-          )?.text ?? ""
-        );
+        yield* Console.error(`Started thread ${threadId}.`);
+        return yield* waitForReply(server, threadId, messageId);
       }),
     ),
   ),
 );
 
 export const threadCommand = Command.make("thread").pipe(
-  Command.withDescription("List, read, and message threads on the running T3 Code server."),
-  Command.withSubcommands([threadListCommand, threadShowCommand, threadSendCommand]),
+  Command.withDescription("List, start, read, and message threads on the running T3 Code server."),
+  Command.withSubcommands([
+    threadListCommand,
+    threadStartCommand,
+    threadShowCommand,
+    threadSendCommand,
+  ]),
 );
