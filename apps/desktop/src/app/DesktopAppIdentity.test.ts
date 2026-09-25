@@ -146,6 +146,16 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
+  it.effect("isolates the desktop profile when a custom T3 home is configured", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal(yield* identity.resolveUserDataPath, "/tmp/codespace-test/desktop-profile");
+      }),
+      { legacyPathExists: true, environment: { env: { T3CODE_HOME: "/tmp/codespace-test" } } },
+    ),
+  );
+
   it.effect("keeps using the legacy userData path when it already exists", () =>
     withIdentity(
       Effect.gen(function* () {
