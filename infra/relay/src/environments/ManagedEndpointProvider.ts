@@ -867,7 +867,23 @@ export const make = Effect.gen(function* () {
             if (finalGeneration === null) {
               return false;
             }
-            yield* deleteTunnel;
+            // A delete whose response is lost (a timeout) may still have
+            // removed the tunnel. Ask Cloudflare before rolling back: if the
+            // tunnel is gone, the delete happened and the claim, including any
+            // released marker, must commit, since no later sweep can find
+            // this tunnel again to retry.
+            yield* deleteTunnel.pipe(
+              Effect.catchTag("ManagedEndpointDeprovisioningFailed", (failure) =>
+                tunnels.get(tunnelId).pipe(
+                  Effect.flatMap(() => Effect.fail(failure)),
+                  Effect.catchTag("ManagedEndpointTunnelClientError", (lookupFailure) =>
+                    isManagedEndpointNotFound(lookupFailure.cause)
+                      ? Effect.void
+                      : Effect.fail(failure),
+                  ),
+                ),
+              ),
+            );
             return true;
           }),
         )
