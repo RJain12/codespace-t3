@@ -1437,6 +1437,7 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
 
 const ThreadHistoryImportCommand = Schema.Struct({
   type: Schema.Literal("thread.history.import"),
+  appendToImportedHistory: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
   messages: Schema.Array(

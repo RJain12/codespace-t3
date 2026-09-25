@@ -1976,7 +1976,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         thread.deletedAt !== null ||
         thread.archivedAt !== null ||
-        thread.messages.length > 0 ||
+        (thread.messages.length > 0 && command.appendToImportedHistory !== true) ||
         thread.latestTurn !== null ||
         thread.session !== null ||
         openRequests(thread).size > 0
@@ -1986,6 +1986,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' must be active and empty before history can be imported.`,
         });
       }
+      const existingCount = thread.messages.length;
+      if (existingCount > 0 && (
+        command.messages.length < existingCount ||
+        thread.messages.some((message, index) => {
+          const incoming = command.messages[index];
+          return !isImportedAgentSessionMessageId(message.id) || incoming === undefined ||
+            incoming.messageId !== message.id || incoming.role !== message.role ||
+            incoming.text !== message.text || incoming.createdAt !== message.createdAt;
+        })
+      )) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "History updates must preserve every previously imported message unchanged.",
+        });
+      }
+      const messagesToImport = command.messages.slice(existingCount);
+      if (existingCount > 0 && messagesToImport.length === 0) return [];
       const firstMessage = command.messages[0];
       if (firstMessage === undefined) {
         return yield* new OrchestrationCommandInvariantError({
@@ -1995,7 +2012,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
 
       const events: Array<PlannedOrchestrationEvent> = [];
-      for (const message of command.messages) {
+      for (const message of messagesToImport) {
         events.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",

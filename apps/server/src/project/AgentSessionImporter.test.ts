@@ -339,6 +339,22 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
         expect(commands.map((command) => command.type)).toEqual(["thread.create", "thread.history.import"]);
         expect(bindings).toHaveLength(1);
         expect(bindings[0]).toMatchObject({ providerInstanceId: "codex", resumeCursor: { threadId: "codex-session" } });
+        commands.length = 0;
+        const updated = yield* runImport({
+          scanner, engine, directory,
+          snapshots: makeSnapshotsLayer({
+            project: makeProject(),
+            getThread: () => Option.some({
+              ...makeProjectedThread({ source: "codex", imported: true }),
+              settledOverride: "settled", settledAt: "2026-08-24T10:00:00.000Z",
+            }),
+          }),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: "codex-session",
+        });
+        expect(updated).toEqual({ importedCount: 1, skippedCount: 0 });
+        expect(commands).toMatchObject([{ type: "thread.history.import", appendToImportedHistory: true }]);
+
       }),
     );
 

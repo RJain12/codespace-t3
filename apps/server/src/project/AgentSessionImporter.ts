@@ -130,7 +130,7 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
     );
   const threads = scanner.recentThreads(
     workspaceRoot,
-    completedSources.map((entry) => entry.source),
+    input.providerSessionId === undefined ? completedSources.map((entry) => entry.source) : [],
     input.providerInstanceId,
   ).pipe(Stream.filter((outcome) => {
     if (outcome._tag === "Skipped") return true;
@@ -203,7 +203,8 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
         if (
           Option.isSome(existingThread) &&
           importedHistoryPresent &&
-          Option.isSome(existingBinding)
+          Option.isSome(existingBinding) &&
+          input.providerSessionId === undefined
         ) {
           yield* directory.recordImportedTranscript({ threadId, source: outcome.source });
           return true;
@@ -263,9 +264,10 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
           });
         }
 
-        if (!importedHistoryPresent) {
+        if (!importedHistoryPresent || input.providerSessionId !== undefined) {
           yield* engine.dispatch({
             type: "thread.history.import",
+            ...(importedHistoryPresent ? { appendToImportedHistory: true } : {}),
             commandId: CommandId.make(yield* crypto.randomUUIDv4),
             threadId,
             messages: thread.messages.map((message, index) => ({

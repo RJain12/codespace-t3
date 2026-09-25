@@ -154,6 +154,32 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
       for (const [index, event] of plannedEvents.entries()) {
         projected = yield* projectEvent(projected, { ...event, sequence: index + 2 });
       }
+      const originalMessages = (projected.threads[0]?.messages ?? []).flatMap((message) => message.role === "system" ? [] : [{
+        messageId: message.id, role: message.role, text: message.text, createdAt: message.createdAt,
+      }]);
+      const appendCommand = {
+        type: "thread.history.import" as const,
+        commandId: CommandId.make("append-native-turn"), threadId,
+        appendToImportedHistory: true,
+        messages: [...originalMessages, {
+          messageId: MessageId.make(`${threadId}:000002`), role: "user" as const,
+          text: "One more native turn", createdAt: "2026-08-24T10:00:00.000Z",
+        }],
+      };
+      const appended = yield* decideOrchestrationCommand({ command: appendCommand, readModel: projected });
+      expect(appended).toMatchObject([
+        { type: "thread.message-sent", payload: { text: "One more native turn" } },
+        { type: "thread.settled" },
+      ]);
+      const repeated = yield* decideOrchestrationCommand({
+        command: { ...appendCommand, messages: originalMessages }, readModel: projected,
+      });
+      expect(repeated).toEqual([]);
+      const changed = yield* decideOrchestrationCommand({
+        command: { ...appendCommand, messages: appendCommand.messages.map((message, index) =>
+          index === 0 ? { ...message, text: "rewritten history" } : message) }, readModel: projected,
+      }).pipe(Effect.flip);
+      expect(changed._tag).toBe("OrchestrationCommandInvariantError");
       projected = yield* projectEvent(projected, {
         sequence: 5,
         eventId: EventId.make("event-import-reverted"),
