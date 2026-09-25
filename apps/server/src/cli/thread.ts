@@ -17,6 +17,7 @@ import {
   type ClientOrchestrationCommand,
   type ModelSelection,
   type OrchestrationLatestTurnState,
+  type OrchestrationMessage,
   OrchestrationMessageRole,
   type OrchestrationProjectShell,
   OrchestrationSessionStatus,
@@ -219,22 +220,31 @@ export const findModelOffers = (
     });
 
 /**
- * How the turn requested at `requestedAt` ended, or undefined while it runs.
- * `requestedAt` is the sent message's `createdAt`. The server gives the turn
- * that message starts the same `latestTurn.requestedAt`. A turn that fails to
- * start sets the session to error with that same timestamp instead.
+ * How the message sent at `sentAt` was handled, or undefined while it may
+ * still run. `sentAt` is the message's server `createdAt`, which the turn it
+ * starts copies into `latestTurn.requestedAt`. The server holds the session
+ * at "starting" while a turn start is pending, so an idle session updated
+ * after `sentAt` means the message was handled without a turn of its own: a
+ * failed start, a provider command, or a steer into another client's turn.
  */
 export const turnOutcome = (
   thread: OrchestrationThreadShell,
-  requestedAt: string,
+  sentAt: string,
 ): Exclude<OrchestrationLatestTurnState, "running"> | "needs-input" | undefined => {
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return "needs-input";
+  if (isThreadBusy(thread)) return undefined;
   const turn = thread.latestTurn;
-  if (turn?.requestedAt === requestedAt) {
+  if (turn?.requestedAt === sentAt) {
     return turn.state === "running" ? undefined : turn.state;
   }
-  if (thread.session?.status === "error" && thread.session.updatedAt === requestedAt) {
-    return "error";
+  const since = Date.parse(sentAt);
+  // A later turn only starts after this message's turn has ended.
+  if (turn !== null && Date.parse(turn.requestedAt) > since) return "completed";
+  const session = thread.session;
+  if (session !== null && Date.parse(session.updatedAt) >= since) {
+    return session.status === "error" || session.status === "interrupted"
+      ? session.status
+      : "completed";
   }
   return undefined;
 };
@@ -371,13 +381,13 @@ const connectLiveServer = Effect.fn("connectThreadCliServer")(function* (
             : Effect.succeed(thread);
         }),
       ),
-    /** Reads the messages of the latest `turns` user turns. */
-    threadDetail: (threadId: ThreadId, turns: number) =>
+    /** Reads the messages of `turns` user turns, the latest ones or those before `beforeCursor`. */
+    threadDetail: (threadId: ThreadId, turns: number, beforeCursor?: string) =>
       call(
         client.orchestration.threadSnapshot({
           headers,
           params: { threadId },
-          payload: { turnLimit: turns },
+          payload: { turnLimit: turns, ...(beforeCursor === undefined ? {} : { beforeCursor }) },
         }),
       ).pipe(
         Effect.catchIf(
@@ -414,20 +424,43 @@ const pollThread = <A>(
   });
 
 /**
- * Waits for the turn that `messageId` started to end and returns the agent's
+ * Reads pages of the thread, newest first, until it finds `messageId`.
+ * Returns that message and the messages after it, until the next user message.
+ * Dispatch returns after the projection commits, so a sent message is there.
+ */
+const readSentTurn = (server: LiveServer, threadId: ThreadId, messageId: MessageId) =>
+  Effect.gen(function* () {
+    let newer: ReadonlyArray<OrchestrationMessage> = [];
+    let beforeCursor: string | undefined;
+    for (;;) {
+      const { thread, page } = yield* server.threadDetail(threadId, 1, beforeCursor);
+      const messages = [...thread.messages, ...newer];
+      const index = messages.findIndex((message) => message.id === messageId);
+      const sent = messages[index];
+      if (sent !== undefined) {
+        const after = messages.slice(index + 1);
+        const nextUser = after.findIndex((message) => message.role === "user");
+        return { sent, replies: nextUser === -1 ? after : after.slice(0, nextUser) };
+      }
+      if (page?.beforeCursor == null) {
+        return yield* Effect.die(
+          new Error(`Sent message ${messageId} is missing from the thread.`),
+        );
+      }
+      newer = messages;
+      beforeCursor = page.beforeCursor;
+    }
+  });
+
+/**
+ * Waits until the server has handled `messageId` and returns the agent's
  * final reply. Fails when the turn fails, is interrupted, or needs the user.
  */
 const waitForReply = (server: LiveServer, threadId: ThreadId, messageId: MessageId) =>
   Effect.gen(function* () {
     // The server replaces the command's createdAt with its own clock, so
-    // read the stamp back from the message. Dispatch returns after the
-    // projection commits, so the message is already there.
-    const sent = (yield* server.threadDetail(threadId, 1)).thread.messages.find(
-      (message) => message.id === messageId,
-    );
-    if (sent === undefined) {
-      return yield* Effect.die(new Error(`Sent message ${messageId} is missing from the thread.`));
-    }
+    // read the stamp back from the message.
+    const { sent } = yield* readSentTurn(server, threadId, messageId);
     const ended = yield* pollThread(server, threadId, (candidate) => {
       const outcome = turnOutcome(candidate, sent.createdAt);
       return outcome === undefined ? undefined : { outcome, thread: candidate };
@@ -438,13 +471,8 @@ const waitForReply = (server: LiveServer, threadId: ThreadId, messageId: Message
         detail: ended.thread.session?.lastError ?? null,
       });
     }
-    const turnId = ended.thread.latestTurn?.turnId;
-    const { thread: detail } = yield* server.threadDetail(threadId, 1);
-    return (
-      detail.messages.findLast(
-        (message) => message.role === "assistant" && message.turnId === turnId,
-      )?.text ?? ""
-    );
+    const { replies } = yield* readSentTurn(server, threadId, messageId);
+    return replies.findLast((message) => message.role === "assistant")?.text ?? "";
   });
 
 /** Runs `run` against the live server and prints what it returns. */
@@ -467,7 +495,7 @@ const runWithLiveServer = <E, R>(
         EnvironmentAuth.runtimeLayer.pipe(
           Layer.provideMerge(FetchHttpClient.layer),
           Layer.provide(ServerConfig.layer(config)),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, logLevel)),
+          Layer.provideMerge(Layer.succeed(References.MinimumLogLevel, logLevel)),
         ),
       ),
     );

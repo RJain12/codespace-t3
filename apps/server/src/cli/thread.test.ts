@@ -64,27 +64,41 @@ const makeSession = (
 });
 
 describe("turnOutcome", () => {
-  it("keeps waiting while the previous turn is still the latest turn", () => {
-    assert.equal(
-      turnOutcome(makeThread({ latestTurn: makeTurn(EARLIER, "completed") }), SENT_AT),
-      undefined,
-    );
+  const LATER = "2026-09-24T12:00:05.000Z";
+
+  it("keeps waiting before the server picks up the message", () => {
+    const thread = makeThread({
+      latestTurn: makeTurn(EARLIER, "completed"),
+      session: makeSession("ready", EARLIER),
+    });
+    assert.equal(turnOutcome(thread, SENT_AT), undefined);
   });
 
-  it("keeps waiting while the requested turn runs", () => {
+  it("keeps waiting while the turn starts or runs", () => {
     assert.equal(
-      turnOutcome(makeThread({ latestTurn: makeTurn(SENT_AT, "running") }), SENT_AT),
+      turnOutcome(makeThread({ session: makeSession("starting", SENT_AT) }), SENT_AT),
+      undefined,
+    );
+    assert.equal(
+      turnOutcome(
+        makeThread({
+          latestTurn: makeTurn(SENT_AT, "running"),
+          session: makeSession("running", SENT_AT),
+        }),
+        SENT_AT,
+      ),
       undefined,
     );
   });
 
   it("reports how the requested turn ended", () => {
+    const session = makeSession("ready", LATER);
     assert.equal(
-      turnOutcome(makeThread({ latestTurn: makeTurn(SENT_AT, "completed") }), SENT_AT),
+      turnOutcome(makeThread({ latestTurn: makeTurn(SENT_AT, "completed"), session }), SENT_AT),
       "completed",
     );
     assert.equal(
-      turnOutcome(makeThread({ latestTurn: makeTurn(SENT_AT, "interrupted") }), SENT_AT),
+      turnOutcome(makeThread({ latestTurn: makeTurn(SENT_AT, "interrupted"), session }), SENT_AT),
       "interrupted",
     );
   });
@@ -92,7 +106,7 @@ describe("turnOutcome", () => {
   it("reports a turn that failed to start", () => {
     const thread = makeThread({
       latestTurn: makeTurn(EARLIER, "completed"),
-      session: makeSession("error", SENT_AT),
+      session: makeSession("error", LATER),
     });
     assert.equal(turnOutcome(thread, SENT_AT), "error");
   });
@@ -102,14 +116,32 @@ describe("turnOutcome", () => {
     assert.equal(turnOutcome(thread, SENT_AT), undefined);
   });
 
+  it("ends when the message was handled without a turn of its own", () => {
+    // A provider command, or a steer into a turn another client started.
+    const thread = makeThread({
+      latestTurn: makeTurn(EARLIER, "completed"),
+      session: makeSession("ready", LATER),
+    });
+    assert.equal(turnOutcome(thread, SENT_AT), "completed");
+  });
+
+  it("ends when a later turn has replaced the requested one", () => {
+    const thread = makeThread({
+      latestTurn: makeTurn(LATER, "completed"),
+      session: makeSession("ready", LATER),
+    });
+    assert.equal(turnOutcome(thread, SENT_AT), "completed");
+  });
+
   it("stops when the turn needs an approval or an answer", () => {
     const running = makeTurn(SENT_AT, "running");
+    const session = makeSession("running", SENT_AT);
     assert.equal(
-      turnOutcome(makeThread({ latestTurn: running, hasPendingApprovals: true }), SENT_AT),
+      turnOutcome(makeThread({ latestTurn: running, session, hasPendingApprovals: true }), SENT_AT),
       "needs-input",
     );
     assert.equal(
-      turnOutcome(makeThread({ latestTurn: running, hasPendingUserInput: true }), SENT_AT),
+      turnOutcome(makeThread({ latestTurn: running, session, hasPendingUserInput: true }), SENT_AT),
       "needs-input",
     );
   });
