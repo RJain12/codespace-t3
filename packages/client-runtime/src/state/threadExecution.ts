@@ -4,9 +4,12 @@ import {
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   isOrchestrationV2WorkActive,
+  isProviderNativeSubagentThread,
+  type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 
 import {
@@ -86,6 +89,67 @@ export function deriveRunlessWorkStartedAt(
       isOrchestrationV2WorkActive(candidate.status),
   );
   return node?.startedAt == null ? null : DateTime.formatIso(node.startedAt);
+}
+
+export interface ProviderSubagentStatus {
+  readonly status: OrchestrationV2ExecutionNode["status"];
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+}
+
+/**
+ * Status of a provider-native subagent thread, which the provider runs and
+ * the user cannot message. Null for every other thread, including T3
+ * delegated tasks, which keep their composer.
+ */
+export function deriveProviderSubagentStatus(
+  projection: OrchestrationV2ThreadProjection,
+): ProviderSubagentStatus | null {
+  if (!isProviderNativeSubagentThread(projection.thread)) return null;
+  const node = projection.nodes.findLast(
+    (candidate) => candidate.kind === "root_turn" && candidate.runId === null,
+  );
+  if (node === undefined) return null;
+  return {
+    status: node.status,
+    startedAt: node.startedAt === null ? null : DateTime.formatIso(node.startedAt),
+    completedAt: node.completedAt === null ? null : DateTime.formatIso(node.completedAt),
+  };
+}
+
+const SUBAGENT_STATUS_LABELS: Record<OrchestrationV2ExecutionNode["status"], string> = {
+  idle: "Idle",
+  pending: "Working",
+  running: "Working",
+  waiting: "Waiting",
+  completed: "Completed",
+  interrupted: "Interrupted",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  rolled_back: "Cancelled",
+};
+
+/**
+ * One line for the read-only subagent bar: "Working 12s", "Completed in 34s",
+ * or just the status when no duration is known.
+ */
+export function formatProviderSubagentStatus(
+  status: ProviderSubagentStatus,
+  nowMs: number,
+): string {
+  const label = SUBAGENT_STATUS_LABELS[status.status];
+  const live = isOrchestrationV2WorkActive(status.status);
+  if (!live && status.status !== "completed") return label;
+  const start = status.startedAt === null ? Number.NaN : Date.parse(status.startedAt);
+  const end = live
+    ? nowMs
+    : status.completedAt === null
+      ? Number.NaN
+      : Date.parse(status.completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return label;
+  // Whole seconds: a ticking label must not flicker through tenths.
+  const elapsed = formatDuration(Math.max(1_000, Math.floor((end - start) / 1_000) * 1_000));
+  return live ? `${label} ${elapsed}` : `${label} in ${elapsed}`;
 }
 
 export function deriveThreadRuntime(

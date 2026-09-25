@@ -9,6 +9,7 @@ import {
 import {
   type ChatAttachment,
   CommandId,
+  isProviderNativeSubagentThread,
   MessageId,
   type ModelSelection,
   OrchestrationV2Command,
@@ -155,6 +156,15 @@ export class OrchestratorProviderAdapterError extends Schema.TaggedError<Orchest
   }
 }
 
+export class OrchestratorSubagentThreadReadOnlyError extends Schema.TaggedError<OrchestratorSubagentThreadReadOnlyError>()(
+  "OrchestratorSubagentThreadReadOnlyError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return "This subagent is run by its provider and cannot take messages. Message the parent thread instead.";
+  }
+}
+
 export class OrchestratorCommandPreviouslyRejectedError extends Schema.TaggedError<OrchestratorCommandPreviouslyRejectedError>()(
   "OrchestratorCommandPreviouslyRejectedError",
   {
@@ -203,6 +213,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorProviderAdapterError,
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorCommandIdConflictError,
+  OrchestratorSubagentThreadReadOnlyError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -3997,6 +4008,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (isProviderNativeSubagentThread(projection.thread)) {
+        return yield* new OrchestratorSubagentThreadReadOnlyError({
+          commandId: command.commandId,
+          threadId: command.threadId,
+        });
+      }
       if (command.usageLimitContinuationOfRunId !== undefined) {
         const run = projection.runs.at(-1) ?? null;
         const failure = latestRootProviderFailure(run, projection.turnItems);

@@ -3,6 +3,7 @@ import {
   NodeId,
   MessageId,
   RunId,
+  ThreadId,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2RunStatus,
 } from "@t3tools/contracts";
@@ -12,6 +13,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   deriveLatestThreadRun,
+  deriveProviderSubagentStatus,
+  formatProviderSubagentStatus,
   deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
   deriveThreadRuntime,
@@ -209,6 +212,75 @@ describe("deriveRunlessWorkStartedAt", () => {
   it("ignores root turns that belong to a run", () => {
     const owned = { ...rootTurn("running"), runId: RunId.make("run-1") };
     expect(deriveRunlessWorkStartedAt({ ...v2Projection, nodes: [owned] })).toBeNull();
+  });
+});
+
+describe("deriveProviderSubagentStatus", () => {
+  const root = {
+    id: NodeId.make("child-root"),
+    threadId: v2Projection.thread.id,
+    runId: null,
+    parentNodeId: null,
+    rootNodeId: NodeId.make("child-root"),
+    kind: "root_turn" as const,
+    status: "completed" as const,
+    countsForRun: false,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    runtimeRequestId: null,
+    checkpointScopeId: null,
+    startedAt: now,
+    completedAt: now,
+  };
+  const child = (creationSource: "provider" | "mcp") => ({
+    ...v2Projection,
+    thread: {
+      ...v2Projection.thread,
+      creationSource,
+      lineage: {
+        parentThreadId: ThreadId.make("parent"),
+        relationshipToParent: "subagent" as const,
+        rootThreadId: ThreadId.make("parent"),
+      },
+    },
+    nodes: [root],
+  });
+
+  it("reports the provider's own subagent from its runless root turn", () => {
+    expect(deriveProviderSubagentStatus(child("provider"))).toEqual({
+      status: "completed",
+      startedAt: "2026-07-28T10:00:00.000Z",
+      completedAt: "2026-07-28T10:00:00.000Z",
+    });
+  });
+
+  it("says how long the subagent has worked, or took", () => {
+    const startedAt = "2026-07-28T10:00:00.000Z";
+    const at = (iso: string) => Date.parse(iso);
+    expect(
+      formatProviderSubagentStatus(
+        { status: "running", startedAt, completedAt: null },
+        at("2026-07-28T10:01:05.400Z"),
+      ),
+    ).toBe("Working 1m 5s");
+    expect(
+      formatProviderSubagentStatus(
+        { status: "completed", startedAt, completedAt: "2026-07-28T10:00:34.000Z" },
+        at("2026-07-28T11:00:00.000Z"),
+      ),
+    ).toBe("Completed in 34s");
+    expect(
+      formatProviderSubagentStatus(
+        { status: "cancelled", startedAt, completedAt: "2026-07-28T10:00:34.000Z" },
+        0,
+      ),
+    ).toBe("Cancelled");
+  });
+
+  it("leaves T3 delegated tasks and ordinary threads alone", () => {
+    expect(deriveProviderSubagentStatus(child("mcp"))).toBeNull();
+    expect(deriveProviderSubagentStatus({ ...v2Projection, nodes: [root] })).toBeNull();
   });
 });
 
