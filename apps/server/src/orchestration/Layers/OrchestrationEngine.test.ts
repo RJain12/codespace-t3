@@ -89,6 +89,63 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("imports Code history without starting a provider turn and deduplicates commands", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const projectId = ProjectId.make("import-project");
+      const threadId = ThreadId.make("import-thread");
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("import-project-create"),
+          projectId,
+          title: "Import",
+          workspaceRoot: process.cwd(),
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("import-thread-create"),
+          projectId,
+          threadId,
+          title: "Code history",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      for (const role of ["user", "assistant", "system"] as const) {
+        const command = {
+          type: "thread.message.import" as const,
+          commandId: CommandId.make(`import-${role}`),
+          threadId,
+          messageId: MessageId.make(`message-${role}`),
+          role,
+          text: `${role} history`,
+          createdAt: now(),
+        };
+        await system.run(system.engine.dispatch(command));
+        await system.run(system.engine.dispatch(command));
+      }
+      const thread = (await system.readModel()).threads.find((t) => t.id === threadId)!;
+      expect(thread.messages.map((m) => [m.role, m.text]).sort()).toEqual([
+        ["assistant", "assistant history"],
+        ["system", "system history"],
+        ["user", "user history"],
+      ]);
+      expect(thread.latestTurn).toBeNull();
+      expect(thread.session).toBeNull();
+      expect(thread.messages.every((m) => m.turnId === null && !m.streaming)).toBe(true);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {

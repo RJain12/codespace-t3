@@ -769,6 +769,17 @@ const ThreadSessionSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Imported history is persisted without requesting a provider turn.
+const ThreadMessageImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -827,6 +838,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadMessageImportCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,

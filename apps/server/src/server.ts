@@ -5,6 +5,7 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import * as ServerConfig from "./config.ts";
+import { codespaceImportRoute } from "./codespace/http.ts";
 import {
   otlpTracesProxyRouteLayer,
   assetRouteLayer,
@@ -294,7 +295,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(Keybindings.layer),
-  Layer.provideMerge(ProviderRegistryLive),
+  Layer.provideMerge(Layer.mergeAll(ProviderRegistryLive, ProviderAdapterRegistryLive)),
   // The instance registry is the new routing keystone — text generation,
   // adapter lookup, and runtime ingestion all resolve `ProviderInstanceId`
   // through this layer. Built-in drivers come from `BUILT_IN_DRIVERS`;
@@ -471,7 +472,7 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     const serverApplicationLayer = Layer.mergeAll(
-      HttpRouter.serve(makeRoutesLayer, {
+      HttpRouter.serve(Layer.mergeAll(makeRoutesLayer, codespaceImportRoute), {
         disableLogger: !config.logWebSocketEvents,
       }),
       httpListeningLayer,
