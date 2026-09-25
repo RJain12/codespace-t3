@@ -4008,12 +4008,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
-      if (isProviderNativeSubagentThread(projection.thread)) {
-        return yield* new OrchestratorSubagentThreadReadOnlyError({
-          commandId: command.commandId,
-          threadId: command.threadId,
-        });
-      }
       if (command.usageLimitContinuationOfRunId !== undefined) {
         const run = projection.runs.at(-1) ?? null;
         const failure = latestRootProviderFailure(run, projection.turnItems);
@@ -8784,9 +8778,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "provider-session.detach":
         yield* dispatchProviderSessionDetach(command, events, effects);
         break;
-      case "message.dispatch":
+      case "message.dispatch": {
+        // The provider owns a native subagent's conversation, so a sent
+        // message has nowhere to go. Only sends are refused: answers to the
+        // subagent's own questions reuse dispatchMessage and must still land.
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        if (isProviderNativeSubagentThread(thread)) {
+          return yield* new OrchestratorSubagentThreadReadOnlyError({
+            commandId: command.commandId,
+            threadId: command.threadId,
+          });
+        }
         yield* dispatchMessage(command, events, effects);
         break;
+      }
       case "notification.delivery.accept":
         yield* dispatchNotificationAccepted(command, events);
         break;

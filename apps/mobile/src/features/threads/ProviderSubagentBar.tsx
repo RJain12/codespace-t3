@@ -16,10 +16,11 @@ import { RequestActionButton } from "./RequestActionButton";
  */
 export function ProviderSubagentBar(props: {
   readonly modelLabel: string;
-  readonly status: ProviderSubagentStatus;
+  /** Null until the subagent's root turn arrives. */
+  readonly status: ProviderSubagentStatus | null;
   readonly onOpenParent: (() => void) | null;
 }) {
-  const live = isOrchestrationV2WorkActive(props.status.status);
+  const live = props.status !== null && isOrchestrationV2WorkActive(props.status.status);
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (!live) return;
@@ -29,13 +30,13 @@ export function ProviderSubagentBar(props: {
   const statusLabel = formatProviderSubagentStatus(props.status, nowMs);
 
   return (
-    <View
-      accessible
-      accessibilityRole="summary"
-      accessibilityLabel={`${props.modelLabel} subagent, ${statusLabel}. It runs on its own and cannot take messages.`}
-      className="flex-row items-center gap-3 rounded-[20px] border border-border-subtle bg-card-alt py-2 pe-2 ps-4"
-    >
-      <View className="min-w-0 flex-1 gap-0.5">
+    <View className="flex-row items-center gap-3 rounded-[20px] border border-border-subtle bg-card-alt py-2 pe-2 ps-4">
+      {/* Only the text is one element, so "Open parent" stays reachable. */}
+      <View
+        accessible
+        accessibilityLabel={`${props.modelLabel} subagent, ${statusLabel}. It runs on its own and cannot take messages.`}
+        className="min-w-0 flex-1 gap-0.5"
+      >
         <Text numberOfLines={1} className="font-t3-bold text-sm text-foreground">
           {props.modelLabel}
         </Text>

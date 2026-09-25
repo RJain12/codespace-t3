@@ -15,12 +15,18 @@ import { Button } from "../ui/button";
  */
 export function ProviderSubagentBar(props: {
   readonly modelLabel: string;
-  readonly status: ProviderSubagentStatus;
+  /** Null until the subagent's root turn arrives. */
+  readonly status: ProviderSubagentStatus | null;
   readonly onOpenParent: (() => void) | null;
 }) {
   const statusRef = useRef<HTMLSpanElement>(null);
   const { status } = props;
-  const live = isOrchestrationV2WorkActive(status.status);
+  const live = status !== null && isOrchestrationV2WorkActive(status.status);
+  // Announced once per transition; the ticking label below is not.
+  const announcement = formatProviderSubagentStatus(
+    status === null ? null : { ...status, startedAt: null },
+    0,
+  );
 
   // The label is written from an effect, and live bars tick through DOM
   // writes, so a running timer never re-renders the chat view.
@@ -37,12 +43,16 @@ export function ProviderSubagentBar(props: {
   }, [live, status]);
 
   return (
-    <div
-      role="status"
-      className="flex min-h-12 items-center gap-3 rounded-3xl py-2 ps-5 pe-2 text-sm"
-    >
+    <div className="flex min-h-12 items-center gap-3 rounded-3xl py-2 ps-5 pe-2 text-sm">
       <span className="min-w-0 truncate font-medium text-foreground">{props.modelLabel}</span>
-      <span ref={statusRef} className="min-w-0 truncate text-muted-foreground tabular-nums" />
+      <span
+        ref={statusRef}
+        aria-hidden
+        className="min-w-0 truncate text-muted-foreground tabular-nums"
+      />
+      <span role="status" className="sr-only">
+        {`${props.modelLabel} subagent: ${announcement}`}
+      </span>
       <span className="ms-auto shrink-0 text-muted-foreground max-sm:hidden">Runs on its own</span>
       {props.onOpenParent ? (
         <Button size="sm" variant="ghost" onClick={props.onOpenParent}>

@@ -82,13 +82,8 @@ export function deriveThreadActivityRun(
 export function deriveRunlessWorkStartedAt(
   projection: OrchestrationV2ThreadProjection,
 ): string | null {
-  const node = projection.nodes.findLast(
-    (candidate) =>
-      candidate.kind === "root_turn" &&
-      candidate.runId === null &&
-      isOrchestrationV2WorkActive(candidate.status),
-  );
-  return node?.startedAt == null ? null : DateTime.formatIso(node.startedAt);
+  const status = deriveProviderSubagentStatus(projection);
+  return status !== null && isOrchestrationV2WorkActive(status.status) ? status.startedAt : null;
 }
 
 export interface ProviderSubagentStatus {
@@ -98,9 +93,9 @@ export interface ProviderSubagentStatus {
 }
 
 /**
- * Status of a provider-native subagent thread, which the provider runs and
- * the user cannot message. Null for every other thread, including T3
- * delegated tasks, which keep their composer.
+ * Status of a provider-native subagent thread (see
+ * isProviderNativeSubagentThread), read from its runless root turn. Null
+ * until that root turn arrives, and for every other thread.
  */
 export function deriveProviderSubagentStatus(
   projection: OrchestrationV2ThreadProjection,
@@ -134,9 +129,10 @@ const SUBAGENT_STATUS_LABELS: Record<OrchestrationV2ExecutionNode["status"], str
  * or just the status when no duration is known.
  */
 export function formatProviderSubagentStatus(
-  status: ProviderSubagentStatus,
+  status: ProviderSubagentStatus | null,
   nowMs: number,
 ): string {
+  if (status === null) return "Starting";
   const label = SUBAGENT_STATUS_LABELS[status.status];
   const live = isOrchestrationV2WorkActive(status.status);
   if (!live && status.status !== "completed") return label;

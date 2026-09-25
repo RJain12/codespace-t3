@@ -32,6 +32,7 @@ import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thre
 import { resolveSubagentPillSegment } from "@t3tools/client-runtime/state/thread-subagents";
 import type { ProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import { formatModelSlugName } from "@t3tools/shared/model";
+import { isProviderNativeSubagentThread } from "@t3tools/contracts";
 import type { QueuedRunEdit } from "../../state/queued-run-edit";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -1220,7 +1221,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     : undefined
                 }
               >
-                {props.providerSubagentStatus ? (
+                {isProviderNativeSubagentThread(props.selectedThread.source) ? (
                   <View
                     className="self-center px-3 pt-1.5"
                     style={{
@@ -1231,7 +1232,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   >
                     <ProviderSubagentBar
                       modelLabel={formatModelSlugName(props.selectedThread.modelSelection.model)}
-                      status={props.providerSubagentStatus}
+                      status={props.providerSubagentStatus ?? null}
                       onOpenParent={
                         props.selectedThread.lineage.parentThreadId === null
                           ? null

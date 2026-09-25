@@ -45,6 +45,7 @@ import {
   type AssistantCitation,
   type ChatFileAttachment,
   DEFAULT_MODEL,
+  isProviderNativeSubagentThread,
   type ChatAttachment as ContractChatAttachment,
   type EnvironmentId,
   type MessageId,
@@ -2015,6 +2016,8 @@ export default function ChatView(props: ChatViewProps) {
     () => (serverProjection === null ? null : deriveProviderSubagentStatus(serverProjection)),
     [serverProjection],
   );
+  const isProviderSubagent =
+    serverThread !== null && isProviderNativeSubagentThread(serverThread.source);
   const supportsProviderSwitchingViaHandoff = useMemo(
     () => threadSupportsProviderHandoff(serverProjection),
     [serverProjection],
@@ -4028,12 +4031,12 @@ export default function ChatView(props: ChatViewProps) {
   // can measure whether its relocated controls fit. The visible chrome remains
   // content-driven: Git/environment context or controls that actually fit.
   // A provider-native subagent cannot take messages: a status bar replaces the
-  // composer and its strips, unless the subagent is asking for an approval or
-  // an answer, which the composer renders.
-  const showProviderSubagentBar =
-    providerSubagentStatus !== null &&
-    pendingApprovals.length === 0 &&
-    pendingUserInputs.length === 0;
+  // composer and its strips. While the subagent asks for an approval or an
+  // answer, the composer that renders those stays below the bar, without the
+  // thread settings that belong to the provider.
+  const showProviderSubagentBar = isProviderSubagent;
+  const providerSubagentNeedsResponse =
+    isProviderSubagent && (pendingApprovals.length > 0 || pendingUserInputs.length > 0);
   const mountComposerContextStrip = shouldShowComposerContextStrip({
     isDraftHeroState,
     persistInActiveThreads: settings.persistComposerContextStrip,
@@ -10631,7 +10634,7 @@ export default function ChatView(props: ChatViewProps) {
                         aria-busy={isSavingQueuedEdit}
                       >
                         <div className="relative z-10">
-                          {showProviderSubagentBar && providerSubagentStatus ? (
+                          {showProviderSubagentBar ? (
                             <ProviderSubagentBar
                               modelLabel={formatModelSlugName(activeThread.modelSelection.model)}
                               status={providerSubagentStatus}
@@ -10641,8 +10644,10 @@ export default function ChatView(props: ChatViewProps) {
                                   : null
                               }
                             />
-                          ) : (
+                          ) : null}
+                          {showProviderSubagentBar && !providerSubagentNeedsResponse ? null : (
                             <ChatComposer
+                              hideThreadSettings={isProviderSubagent}
                               multipleModelSelections={multipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===

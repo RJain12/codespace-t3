@@ -195,8 +195,21 @@ describe("deriveRunlessWorkStartedAt", () => {
     completedAt: null,
   });
 
+  const nativeChild = {
+    ...v2Projection,
+    thread: {
+      ...v2Projection.thread,
+      creationSource: "provider" as const,
+      lineage: {
+        parentThreadId: ThreadId.make("parent"),
+        relationshipToParent: "subagent" as const,
+        rootThreadId: ThreadId.make("parent"),
+      },
+    },
+  };
+
   it("times a provider-native subagent from its runless root turn while it works", () => {
-    const projection = { ...v2Projection, nodes: [rootTurn("running", later)] };
+    const projection = { ...nativeChild, nodes: [rootTurn("running", later)] };
     expect(deriveRunlessWorkStartedAt(projection)).toBe("2026-07-28T10:05:00.000Z");
     // The subagent has no run, so it stays unstoppable and unqueueable.
     expect(deriveThreadRuntime(projection)).toBeNull();
@@ -205,13 +218,16 @@ describe("deriveRunlessWorkStartedAt", () => {
   it.each(["completed", "cancelled", "failed", "interrupted", "idle"] as const)(
     "is idle once the subagent is %s",
     (status) => {
-      expect(deriveRunlessWorkStartedAt({ ...v2Projection, nodes: [rootTurn(status)] })).toBe(null);
+      expect(deriveRunlessWorkStartedAt({ ...nativeChild, nodes: [rootTurn(status)] })).toBe(null);
     },
   );
 
-  it("ignores root turns that belong to a run", () => {
+  it("ignores root turns that belong to a run, and threads the provider does not run", () => {
     const owned = { ...rootTurn("running"), runId: RunId.make("run-1") };
-    expect(deriveRunlessWorkStartedAt({ ...v2Projection, nodes: [owned] })).toBeNull();
+    expect(deriveRunlessWorkStartedAt({ ...nativeChild, nodes: [owned] })).toBeNull();
+    expect(
+      deriveRunlessWorkStartedAt({ ...v2Projection, nodes: [rootTurn("running")] }),
+    ).toBeNull();
   });
 });
 
@@ -276,6 +292,7 @@ describe("deriveProviderSubagentStatus", () => {
         0,
       ),
     ).toBe("Cancelled");
+    expect(formatProviderSubagentStatus(null, 0)).toBe("Starting");
   });
 
   it("leaves T3 delegated tasks and ordinary threads alone", () => {

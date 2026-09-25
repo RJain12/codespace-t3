@@ -165,10 +165,9 @@ snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
 On web and desktop, use **Agents** to follow work delegated to subagents.
-Subagents that a provider starts on its own, such as Claude's Agent tool, run
-without you: their threads show the model and how long they have worked where
-the composer would be, with **Open parent** to go back and message the parent.
-Tasks started with `delegate_task` keep their composer and accept follow-ups.
+
+Subagent threads started by the agent can't take messages; message the parent
+thread instead.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
