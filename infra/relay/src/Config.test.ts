@@ -77,3 +77,29 @@ it.effect("declares both cleanup modes as plain env bindings", () =>
     });
   }),
 );
+
+it.effect.each([
+  { name: "missing", env: {}, expected: undefined },
+  { name: "positive", env: { RELAY_LEGACY_TUNNEL_GRACE_MINUTES: "10" }, expected: "10" },
+] as const)("publishes a $name legacy grace override", ({ env, expected }) =>
+  Effect.gen(function* () {
+    const bindings = yield* managedEndpointCleanupModeEnv.pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env })),
+    );
+    expect(bindings.RELAY_LEGACY_TUNNEL_GRACE_MINUTES).toBe(expected);
+  }),
+);
+
+it.effect.each(["0", "-10"])("rejects a grace override of %s minutes", (value) =>
+  Effect.gen(function* () {
+    const error = yield* Effect.flip(
+      managedEndpointCleanupModeEnv.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnv({ env: { RELAY_LEGACY_TUNNEL_GRACE_MINUTES: value } }),
+        ),
+      ),
+    );
+    expect(error._tag).toBe("ConfigError");
+  }),
+);
