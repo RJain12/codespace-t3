@@ -145,6 +145,41 @@ export function assertClaudeBackgroundSubagentLifecycleOutput(
   assert.isDefined(agentAChild);
   assert.deepEqual(assistantTexts(agentAChild), ["A_FIRST", "A_SECOND"]);
 
+  // The recording's subagent thinking lands in each child thread, before the
+  // reply it led to, and never in the parent.
+  const thinkingOf = (child: OrchestrationV2ThreadProjection | undefined) =>
+    (child?.turnItems ?? []).flatMap((item) =>
+      item.type === "reasoning" && item.title === "Thinking" ? [item] : [],
+    );
+  const agentAThinking = thinkingOf(agentAChild);
+  assert.lengthOf(agentAThinking, 2, "both of Agent A's runs thought before replying");
+  assert.include(agentAThinking[0]?.text, '"A_FIRST"');
+  assert.include(agentAThinking[1]?.text, '"A_SECOND"');
+  for (const item of agentAThinking) {
+    assert.equal(item.status, "completed");
+    assert.isFalse(item.streaming);
+    assert.isNull(item.runId);
+  }
+  const agentAOrder = agentAChild.turnItems.flatMap((item) =>
+    item.type === "assistant_message"
+      ? [item.text.trim()]
+      : item.type === "reasoning" && item.title === "Thinking"
+        ? ["thinking"]
+        : [],
+  );
+  assert.deepEqual(agentAOrder, ["thinking", "A_FIRST", "thinking", "A_SECOND"]);
+  const agentBChild =
+    agentB?.childThreadId == null ? undefined : result.projections.get(agentB.childThreadId);
+  assert.lengthOf(thinkingOf(agentBChild), 1);
+  assert.include(thinkingOf(agentBChild)[0]?.text, "B_DONE");
+  const subagentThinking = new Set(
+    [...agentAThinking, ...thinkingOf(agentBChild)].map((item) => item.text),
+  );
+  assert.isFalse(
+    thinkingOf(projection).some((item) => subagentThinking.has(item.text)),
+    "subagent thinking leaked into the parent thread",
+  );
+
   // Subagents appear in background_tasks_changed but never on the roster.
   assert.isFalse(
     result.domainEvents.some(
