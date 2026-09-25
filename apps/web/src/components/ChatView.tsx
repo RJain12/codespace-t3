@@ -10809,6 +10809,7 @@ export default function ChatView(props: ChatViewProps) {
                             onFileOpen={openFileAttachment}
                             editingQueuedAttachments={composerEditingQueuedAttachments}
                             onRemoveEditingQueuedAttachment={removeEditingQueuedAttachment}
+                            onCancelEditingQueuedMessage={cancelEditingQueuedRun}
                           />
                         </div>
                       </ComposerSurface.Host>
