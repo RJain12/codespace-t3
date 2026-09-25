@@ -971,13 +971,45 @@ describe("buildThreadFeed", () => {
       projected(runningCommand, 1),
     ]);
 
-    const presented = deriveThreadFeedPresentation(feed, null, new Set(), new Set(), startedAt);
+    const presented = deriveThreadFeedPresentation(
+      feed,
+      null,
+      new Set(),
+      new Set(),
+      startedAt,
+      true,
+    );
     expect(presented.find((entry) => entry.type === "work-toggle")).toMatchObject({
       summary: "Running vp",
       live: true,
       shimmer: true,
     });
     expect(presented.some((entry) => entry.type === "thinking")).toBe(false);
+  });
+
+  it("keeps a runless tail settled while a normal thread waits for its sent run", () => {
+    // Right after a send the local clock runs before the server creates the
+    // run, and the latest run may still be queued: neither is runless work.
+    const startedAt = "2026-06-20T00:00:05.000Z";
+    const feed = buildThreadFeed([
+      projected({ ...userMessage(), runId: null }, 0),
+      projected({ ...command(), runId: null }, 1),
+    ]);
+    for (const latestRun of [
+      null,
+      { runId, status: "queued" as const, startedAt: null, completedAt: null },
+    ]) {
+      const presented = deriveThreadFeedPresentation(
+        feed,
+        latestRun,
+        new Set(),
+        new Set(),
+        startedAt,
+      );
+      const toggle = presented.find((entry) => entry.type === "work-toggle");
+      expect(toggle).toMatchObject({ live: false, shimmer: false });
+      expect(presented.at(-1)?.type).toBe("thinking");
+    }
   });
 
   it("waits for workspace preparation before showing provider activity", () => {

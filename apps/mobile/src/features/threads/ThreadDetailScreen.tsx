@@ -136,6 +136,8 @@ export interface ThreadDetailScreenProps {
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
   readonly activityRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
+  /** The live work is a provider-native subagent's runless root turn. */
+  readonly runlessWorkActive?: boolean;
   readonly isCompacting: boolean;
   /**
    * The server has not created this thread yet. "preparing" runs while the
@@ -1031,6 +1033,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               threadTitle={props.selectedThread.title}
               latestRun={props.activityRun}
               activeWorkStartedAt={props.activeWorkStartedAt}
+              runlessWorkActive={props.runlessWorkActive ?? false}
               listRef={listRef}
               freeze={freeze}
               anchorMessageId={anchorMessageId}

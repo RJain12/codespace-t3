@@ -394,6 +394,13 @@ export function useThreadComposerState() {
     selectedThreadVisibleTurnItems,
   ]);
 
+  const runlessWorkStartedAt = useMemo(
+    () =>
+      selectedThreadProjection
+        ? deriveRunlessWorkStartedAt(selectedThreadProjection.projection)
+        : null,
+    [selectedThreadProjection],
+  );
   const activeWorkStartedAt = useMemo(() => {
     if (!selectedThreadShell) {
       return null;
@@ -402,17 +409,10 @@ export function useThreadComposerState() {
       resolveThreadWorkingStartedAt({
         latestRun: selectedThreadActivityRun,
         runtime: selectedThreadRuntime,
-      }) ??
-      (selectedThreadProjection
-        ? deriveRunlessWorkStartedAt(selectedThreadProjection.projection)
-        : null)
+      }) ?? runlessWorkStartedAt
     );
-  }, [
-    selectedThreadActivityRun,
-    selectedThreadProjection,
-    selectedThreadRuntime,
-    selectedThreadShell,
-  ]);
+  }, [selectedThreadActivityRun, runlessWorkStartedAt, selectedThreadRuntime, selectedThreadShell]);
+  const runlessWorkActive = runlessWorkStartedAt !== null;
 
   // The run can start, or be cancelled from another client, while its message
   // is open in the composer. Leave edit mode rather than saving into a run the
@@ -1035,6 +1035,7 @@ export function useThreadComposerState() {
     selectedThreadQueuedMessages,
     dispatchingQueuedMessageId,
     activeWorkStartedAt,
+    runlessWorkActive,
     isCompacting,
     draftMessage,
     draftAttachments,
