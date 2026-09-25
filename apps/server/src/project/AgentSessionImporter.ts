@@ -226,6 +226,20 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
           return yield* new AgentSessionThreadModifiedError({ threadId });
         }
 
+        // The command engine requires an event. A retry with identical history
+        // can acknowledge the transcript directly after the activity checks.
+        if (Option.isSome(existingThread) && importedHistoryPresent &&
+            existingThread.value.messages.length === thread.messages.length &&
+            thread.messages.every((message, index) => {
+              const existing = existingThread.value.messages[index];
+              return existing?.id === `${threadId}:${String(index).padStart(6, "0")}` &&
+                existing.role === message.role && existing.text === message.text &&
+                existing.createdAt === message.createdAt;
+            })) {
+          yield* directory.recordImportedTranscript({ threadId, source: outcome.source });
+          return true;
+        }
+
         // Install the cursor before the thread becomes visible. A concurrent
         // real session can replace it, while insert-ignore keeps this import
         // from replacing that newer binding.
