@@ -439,6 +439,29 @@ export const make = Effect.gen(function* () {
           });
         }
       }
+      // A provider-native subagent thread has no runs: its work is a runless
+      // root turn that only the dead provider process could settle. Left
+      // running, the child would show as working forever.
+      for (const node of projection.nodes) {
+        if (
+          node.kind !== "root_turn" ||
+          node.runId !== null ||
+          !isNonterminalNodeStatus(node.status) ||
+          cancelledStaleNodeIds.has(node.id)
+        ) {
+          continue;
+        }
+        cancelledStaleNodeIds.add(node.id);
+        events.push({
+          id: yield* allocateEventId(),
+          type: "node.updated",
+          threadId: projection.thread.id,
+          nodeId: node.id,
+          providerInstanceId: projection.thread.providerInstanceId,
+          occurredAt: now,
+          payload: { ...node, status: "cancelled", completedAt: now },
+        });
+      }
       // All provider processes are gone on startup/shutdown: clear any
       // persisted Waiting roster (including idle threads from settled roots)
       // and idle active threads without resurrecting active status.
