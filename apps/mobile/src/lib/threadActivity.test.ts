@@ -956,6 +956,30 @@ describe("buildThreadFeed", () => {
     });
   });
 
+  it("keeps a provider-native subagent's runless tool call live while it works", () => {
+    const startedAt = "2026-06-20T00:00:01.000Z";
+    const { exitCode: _exitCode, ...completedCommand } = command();
+    const runningCommand: OrchestrationV2TurnItem = {
+      ...completedCommand,
+      runId: null,
+      status: "running",
+      completedAt: null,
+      output: "",
+    };
+    const feed = buildThreadFeed([
+      projected({ ...userMessage(), runId: null }, 0),
+      projected(runningCommand, 1),
+    ]);
+
+    const presented = deriveThreadFeedPresentation(feed, null, new Set(), new Set(), startedAt);
+    expect(presented.find((entry) => entry.type === "work-toggle")).toMatchObject({
+      summary: "Running vp",
+      live: true,
+      shimmer: true,
+    });
+    expect(presented.some((entry) => entry.type === "thinking")).toBe(false);
+  });
+
   it("waits for workspace preparation before showing provider activity", () => {
     const startedAt = "2026-04-01T00:00:01.000Z";
     const run = { runId, status: "preparing" as const, startedAt: null, completedAt: null };

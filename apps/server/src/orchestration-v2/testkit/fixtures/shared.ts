@@ -2,6 +2,7 @@ import { assert } from "@effect/vitest";
 import {
   type ChatAttachment,
   CommandId,
+  isOrchestrationV2WorkActive,
   MessageId,
   ProjectId,
   ThreadId,
@@ -1042,6 +1043,66 @@ export function assertNoExtraAppRunsForProviderChildren(input: {
     input.expectedAppRuns,
     "provider child activity must not create additional app runs",
   );
+}
+
+/**
+ * Provider-native subagent threads have no runs; clients show them working
+ * from the child's runless root turn. Pin that contract for every recorded
+ * native subagent: the child hangs off the subagent node, every root turn is
+ * runless, the root turn is live before the child's first item, and its
+ * activity mirrors the subagent's (including a resume re-opening it).
+ */
+export function assertProviderNativeSubagentRootTurns(result: OrchestratorV2ScenarioResult) {
+  const activity = (statuses: ReadonlyArray<OrchestrationV2ExecutionNode["status"]>) =>
+    statuses
+      .map((status) => (isOrchestrationV2WorkActive(status) ? "active" : status))
+      .filter((status, index, all) => status !== all[index - 1]);
+  for (const projection of result.projections.values()) {
+    for (const subagent of projection.subagents) {
+      if (subagent.origin !== "provider_native" || subagent.childThreadId === null) continue;
+      const childThreadId = subagent.childThreadId;
+      const child = result.projections.get(childThreadId);
+      assert.isDefined(child, `missing child thread for subagent ${subagent.id}`);
+      assert.equal(child.thread.creationSource, "provider");
+      assert.deepEqual(child.thread.forkedFrom, { type: "node", nodeId: subagent.id });
+      assert.lengthOf(child.runs, 0);
+      const roots = child.nodes.filter((node) => node.kind === "root_turn");
+      assert.isNotEmpty(roots, `child ${childThreadId} must have a root turn`);
+      for (const root of roots) assert.isNull(root.runId);
+
+      const rootEvents = result.domainEvents.flatMap((event, index) =>
+        event.type === "node.updated" &&
+        event.payload.threadId === childThreadId &&
+        event.payload.kind === "root_turn"
+          ? [{ index, status: event.payload.status }]
+          : [],
+      );
+      const firstItemIndex = result.domainEvents.findIndex(
+        (event) =>
+          event.type === "turn-item.updated" &&
+          event.payload.threadId === childThreadId &&
+          event.payload.type !== "user_message",
+      );
+      assert.equal(rootEvents[0]?.status, "running");
+      if (firstItemIndex !== -1) {
+        assert.isBelow(
+          rootEvents[0]?.index ?? Infinity,
+          firstItemIndex,
+          `child ${childThreadId} must be working before its first item`,
+        );
+      }
+      const subagentStatuses = result.domainEvents.flatMap((event) =>
+        event.type === "subagent.updated" && event.payload.id === subagent.id
+          ? [event.payload.status]
+          : [],
+      );
+      assert.deepEqual(
+        activity(rootEvents.map((event) => event.status)),
+        activity(subagentStatuses),
+        `child ${childThreadId} root turn must follow subagent ${subagent.id}`,
+      );
+    }
+  }
 }
 
 export function assertExecutionNodeKinds(

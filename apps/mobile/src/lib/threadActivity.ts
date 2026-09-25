@@ -1037,9 +1037,10 @@ export function deriveThreadFeedPresentation(
   }
   const result: ThreadFeedEntry[] = [];
   for (const entry of sourceFeed) {
+    // A provider-native subagent works without a run, so its null-run tail
+    // is live while it works (activeRunId is null then too).
     const isActiveTailGroup =
       isWorking &&
-      activeRunId !== null &&
       entry.type === "activity-group" &&
       activeTailGroup?.type === "activity-group" &&
       activeTailGroup.id === entry.id &&

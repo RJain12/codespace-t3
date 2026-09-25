@@ -2,6 +2,7 @@ import type { ComposerTextPaste } from "../native/T3ComposerEditor.types";
 import { useAtomValue } from "@effect/atom-react";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import {
+  deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
@@ -397,11 +398,21 @@ export function useThreadComposerState() {
     if (!selectedThreadShell) {
       return null;
     }
-    return resolveThreadWorkingStartedAt({
-      latestRun: selectedThreadActivityRun,
-      runtime: selectedThreadRuntime,
-    });
-  }, [selectedThreadActivityRun, selectedThreadRuntime, selectedThreadShell]);
+    return (
+      resolveThreadWorkingStartedAt({
+        latestRun: selectedThreadActivityRun,
+        runtime: selectedThreadRuntime,
+      }) ??
+      (selectedThreadProjection
+        ? deriveRunlessWorkStartedAt(selectedThreadProjection.projection)
+        : null)
+    );
+  }, [
+    selectedThreadActivityRun,
+    selectedThreadProjection,
+    selectedThreadRuntime,
+    selectedThreadShell,
+  ]);
 
   // The run can start, or be cancelled from another client, while its message
   // is open in the composer. Leave edit mode rather than saving into a run the

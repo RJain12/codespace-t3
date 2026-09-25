@@ -81,6 +81,7 @@ import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
+  deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
   deriveLatestThreadRun,
   deriveThreadRuntime,
@@ -2003,6 +2004,10 @@ export default function ChatView(props: ChatViewProps) {
     () => (serverProjection === null ? null : deriveThreadRuntime(serverProjection)),
     [serverProjection],
   );
+  const runlessWorkStartedAt = useMemo(
+    () => (serverProjection === null ? null : deriveRunlessWorkStartedAt(serverProjection)),
+    [serverProjection],
+  );
   const supportsProviderSwitchingViaHandoff = useMemo(
     () => threadSupportsProviderHandoff(serverProjection),
     [serverProjection],
@@ -3414,7 +3419,12 @@ export default function ChatView(props: ChatViewProps) {
     compactRequestIsActive &&
     !compactionSettled;
   const isWorking =
-    phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint || isCompacting;
+    phase === "running" ||
+    isSendBusy ||
+    isConnecting ||
+    isRevertingCheckpoint ||
+    isCompacting ||
+    runlessWorkStartedAt !== null;
   const activeContextWindow = useMemo(
     () =>
       deriveLatestContextWindowSnapshot(
@@ -3446,11 +3456,9 @@ export default function ChatView(props: ChatViewProps) {
       }),
     ];
   }, [serverProjection]);
-  const activeWorkStartedAt = deriveActiveWorkStartedAt(
-    activeActivityRun,
-    activeRuntime,
-    localDispatchStartedAt,
-  );
+  const activeWorkStartedAt =
+    deriveActiveWorkStartedAt(activeActivityRun, activeRuntime, localDispatchStartedAt) ??
+    runlessWorkStartedAt;
   // Server-side workspace preparation: unlike the local-dispatch flag this
   // survives reloads and shows on remote viewers of the same thread.
   const activeRunPreparing = activeActivityRun?.status === "preparing";
@@ -10445,6 +10453,7 @@ export default function ChatView(props: ChatViewProps) {
                     }
                   : {})}
                 isWorking={!paintOnlyDisplayedTimeline && isWorking}
+                runlessWorkActive={runlessWorkStartedAt !== null}
                 activeTurnInProgress={
                   !paintOnlyDisplayedTimeline && (isWorking || !latestRunSettled)
                 }
