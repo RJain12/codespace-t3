@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Redeploy every resource. Needed after changing a Clerk, APNs or FCM value. Replaces the Postgres runtime role.
+        description: Redeploy every resource. Needed only for values the Worker reads at startup (see docs/operations/release.md). Replaces the Postgres runtime role.
         type: boolean
         default: false
 
