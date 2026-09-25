@@ -141,11 +141,18 @@ Required `production` environment secrets:
 - `APNS_PRIVATE_KEY`
 
 After changing a variable or secret, run the **Deploy T3 Connect relay** workflow manually from
-`main`. The tunnel cleanup modes are Worker `env` bindings, so a normal run applies them. Alchemy does
-not redeploy the Worker when only a value read in the Worker's startup code changes
-([alchemy-run/alchemy#1831](https://github.com/alchemy-run/alchemy/issues/1831)), so any other
-variable or secret needs the run with **force** checked. A forced run also replaces the Postgres
-runtime role and its password ([alchemy-run/alchemy#1832](https://github.com/alchemy-run/alchemy/issues/1832)).
+`main`. Whether it needs **force** depends on where the relay reads the value:
+
+- The tunnel cleanup modes are Worker `env` bindings, and `RELAY_DOMAIN`, `RELAY_API_ZONE_NAME`, and
+  `RELAY_TUNNEL_ZONE_NAME` configure deployed resources. A normal run applies them.
+- `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `CLERK_JWT_AUDIENCE`, the `APNS_*` values, and
+  `FCM_SERVICE_ACCOUNT` are read in the Worker's startup code.
+  Alchemy does not redeploy the Worker when only one of these changes
+  ([alchemy-run/alchemy#1831](https://github.com/alchemy-run/alchemy/issues/1831)), so they need the
+  run with **force** checked.
+
+A forced run also replaces the Postgres runtime role and its password
+([alchemy-run/alchemy#1832](https://github.com/alchemy-run/alchemy/issues/1832)).
 
 The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
 are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
