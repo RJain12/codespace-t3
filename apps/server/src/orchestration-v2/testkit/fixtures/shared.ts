@@ -187,6 +187,8 @@ export type OrchestratorFixtureInputStep =
       readonly status: OrchestrationV2RunStatus;
       /** Then also wait until that run has projected an item of this type. */
       readonly waitForTurnItemType?: OrchestrationV2TurnItem["type"];
+      /** Advance the test clock by this much each time the provider goes quiet. */
+      readonly advanceClockWhenQuiet?: Duration.Input;
     }
   | {
       readonly type: "capture_shell_snapshot";
@@ -509,7 +511,10 @@ export function materializeFixtureInput(input: {
                     nextStep.targetRunIndex === runIndex) ||
                   // A provider continuation run starts while this thread is
                   // busy, so waiting for idle first would never return.
-                  (nextStep.type === "await_run_status" && nextStep.targetRunIndex > runIndex))) ||
+                  (nextStep.type === "await_run_status" &&
+                    (nextStep.targetRunIndex > runIndex ||
+                      // Held open until the test clock moves, so it cannot go idle first.
+                      nextStep.advanceClockWhenQuiet !== undefined)))) ||
               nextStep?.type === "approve_next_runtime_request" ||
               nextStep?.type === "answer_next_user_input_request";
             const key = `run:${runIndex}`;
@@ -595,6 +600,9 @@ export function materializeFixtureInput(input: {
             threadId: ids.threadId,
             runId: runIdFor(step.targetRunIndex),
             status: step.status,
+            ...(step.advanceClockWhenQuiet === undefined
+              ? {}
+              : { advanceClockWhenQuiet: step.advanceClockWhenQuiet }),
           });
           if (step.waitForTurnItemType !== undefined) {
             steps.push({

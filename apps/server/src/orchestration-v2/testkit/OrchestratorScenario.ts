@@ -55,6 +55,12 @@ export type OrchestratorV2ScenarioStep =
       readonly threadId: ThreadId;
       readonly runId: OrchestrationV2Run["id"];
       readonly status: OrchestrationV2Run["status"];
+      /**
+       * Advance the test clock by this much whenever no event has been stored
+       * for a short wall-clock quiet window, e.g. to pass an adapter's finish
+       * debounce once the provider has stopped streaming.
+       */
+      readonly advanceClockWhenQuiet?: Duration.Input;
     }
   | {
       readonly type: "await_run_turn_item";
@@ -201,6 +207,9 @@ const SCENARIO_WAIT_ATTEMPTS = 10_000;
 // the iteration budget and this wall-clock deadline are spent.
 const SCENARIO_WAIT_DEADLINE_MS = 60_000;
 const scenarioWaitDeadline = () => performance.now() + SCENARIO_WAIT_DEADLINE_MS;
+// Replay frames are local, so a provider that has written nothing for this
+// long has stopped streaming until the test clock moves.
+const SCENARIO_QUIET_WINDOW_MS = 250;
 const scenarioWaitExhausted = (attemptsRemaining: number, deadlineAt: number) =>
   attemptsRemaining <= 0 && performance.now() >= deadlineAt;
 
@@ -233,6 +242,8 @@ export function runOrchestratorV2Scenario(
   scenario: OrchestratorV2Scenario,
   options: {
     readonly replayGate?: ProviderReplayGate;
+    /** Runs after the steps, while the provider session is still open. */
+    readonly afterSteps?: Effect.Effect<void>;
   } = {},
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
@@ -355,10 +366,28 @@ export function runOrchestratorV2Scenario(
           return yield* waitForRunSteerable(threadId, runId, attemptsRemaining - 1, deadlineAt);
         });
 
+      // Wall-clock progress of a quiet-advancing wait: the stored event count
+      // when it last changed, and when.
+      const quietSince = { events: -1, at: 0 };
+      const advanceClockIfQuiet = (duration: Duration.Input) =>
+        Effect.gen(function* () {
+          const events = (yield* Ref.get(observedStoredEvents)).length;
+          const now = performance.now();
+          if (events !== quietSince.events) {
+            quietSince.events = events;
+            quietSince.at = now;
+            return;
+          }
+          if (now - quietSince.at < SCENARIO_QUIET_WINDOW_MS) return;
+          quietSince.at = now;
+          yield* TestClock.adjust(duration);
+        });
+
       const waitForRunStatus = (
         threadId: ThreadId,
         runId: OrchestrationV2Run["id"],
         status: OrchestrationV2Run["status"],
+        advanceClockWhenQuiet: Duration.Input | undefined,
         attemptsRemaining = SCENARIO_WAIT_ATTEMPTS,
         deadlineAt = scenarioWaitDeadline(),
       ): Effect.Effect<void, OrchestratorV2Error | OrchestratorV2ScenarioStepError, never> =>
@@ -367,6 +396,9 @@ export function runOrchestratorV2Scenario(
           const run = projection.runs.find((candidate) => candidate.id === runId);
           if (run?.status === status) {
             return;
+          }
+          if (advanceClockWhenQuiet !== undefined) {
+            yield* advanceClockIfQuiet(advanceClockWhenQuiet);
           }
           if (scenarioWaitExhausted(attemptsRemaining, deadlineAt)) {
             return yield* new OrchestratorV2ScenarioStepError({
@@ -379,6 +411,7 @@ export function runOrchestratorV2Scenario(
             threadId,
             runId,
             status,
+            advanceClockWhenQuiet,
             attemptsRemaining - 1,
             deadlineAt,
           );
@@ -540,7 +573,12 @@ export function runOrchestratorV2Scenario(
             yield* waitForRunSteerable(step.threadId, step.runId);
             break;
           case "await_run_status":
-            yield* waitForRunStatus(step.threadId, step.runId, step.status);
+            yield* waitForRunStatus(
+              step.threadId,
+              step.runId,
+              step.status,
+              step.advanceClockWhenQuiet,
+            );
             break;
           case "await_run_turn_item":
             yield* waitForRunTurnItem(step.threadId, step.runId, step.itemType);
@@ -572,6 +610,9 @@ export function runOrchestratorV2Scenario(
 
       for (const key of Array.from(backgroundDispatches.keys())) {
         yield* awaitDispatch(key);
+      }
+      if (options.afterSteps !== undefined) {
+        yield* options.afterSteps;
       }
 
       const shellSnapshot = yield* orchestrator.getShellSnapshot();
