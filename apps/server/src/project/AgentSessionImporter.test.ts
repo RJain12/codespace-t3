@@ -184,9 +184,13 @@ const runImport = (input: {
   readonly directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
   readonly snapshots: ReturnType<typeof makeSnapshotsLayer>;
   readonly expectedWorkspaceRoot?: string;
+  readonly providerInstanceId?: ProviderInstanceId;
+  readonly providerSessionId?: string;
 }) =>
   importRecentAgentThreads({
     projectId: PROJECT_ID,
+    ...(input.providerInstanceId === undefined ? {} : { providerInstanceId: input.providerInstanceId }),
+    ...(input.providerSessionId === undefined ? {} : { providerSessionId: input.providerSessionId }),
     ...(input.expectedWorkspaceRoot === undefined
       ? {}
       : { expectedWorkspaceRoot: input.expectedWorkspaceRoot }),
@@ -284,6 +288,57 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
             runtimePayload: { cwd: WORKSPACE_ROOT },
           },
         ]);
+      }),
+    );
+
+    it.effect("imports only the requested account and native session", () =>
+      Effect.gen(function* () {
+        const commands: Array<OrchestrationCommand> = [];
+        const bindings: Array<ProviderSessionDirectory.ProviderRuntimeBinding> = [];
+        let scannedRoot: string | undefined;
+        const scanner = AgentSessionScanner.AgentSessionScanner.of({
+          scan: Effect.die("unused"),
+          recentThreads: (workspaceRoot) => {
+            scannedRoot = workspaceRoot;
+            return Stream.fromIterable([
+              makeThreadOutcome(makeThread("claudeAgent")),
+              makeThreadOutcome({ ...makeThread("codex"), providerSessionId: "unrelated" }),
+              makeThreadOutcome(makeThread("codex")),
+            ]);
+          },
+        });
+        const engine = OrchestrationEngine.OrchestrationEngineService.of({
+          dispatch: (command) => Effect.sync(() => ({ sequence: commands.push(command) })),
+          readEvents: () => Stream.empty,
+          readThreadEvents: () => Stream.empty,
+          getThreadReplayStats: () => Effect.die("unused"),
+          streamDomainEvents: Stream.empty,
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
+          latestSequence: Effect.succeed(0),
+        });
+        const directory = ProviderSessionDirectory.ProviderSessionDirectory.of({
+          upsert: (binding) => Effect.sync(() => void bindings.push(binding)),
+          getProvider: () => Effect.die("unused"),
+          recordImportedTranscript: () => Effect.void,
+          getBinding: () => Effect.succeed(Option.none()),
+          listThreadIds: () => Effect.die("unused"),
+          listBindings: () => Effect.die("unused"),
+        });
+
+        const result = yield* runImport({
+          scanner,
+          engine,
+          directory,
+          snapshots: makeSnapshotsLayer({ project: makeProject() }),
+          expectedWorkspaceRoot: `${WORKSPACE_ROOT}/`,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: "codex-session",
+        });
+
+        expect(result).toEqual({ importedCount: 1, skippedCount: 0 });
+        expect(commands.map((command) => command.type)).toEqual(["thread.create", "thread.history.import"]);
+        expect(bindings).toHaveLength(1);
+        expect(bindings[0]).toMatchObject({ providerInstanceId: "codex", resumeCursor: { threadId: "codex-session" } });
       }),
     );
 

@@ -131,7 +131,13 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
   const threads = scanner.recentThreads(
     workspaceRoot,
     completedSources.map((entry) => entry.source),
-  );
+    input.providerInstanceId,
+  ).pipe(Stream.filter((outcome) => {
+    if (outcome._tag === "Skipped") return true;
+    const source = outcome.source;
+    return (input.providerInstanceId === undefined || source.providerInstanceId === input.providerInstanceId)
+      && (input.providerSessionId === undefined || source.providerSessionId === input.providerSessionId);
+  }));
   const importedThreadIds = new Set<ThreadId>();
   let importedCount = 0;
   let skippedCount = 0;
